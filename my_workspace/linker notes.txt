@@ -1,0 +1,50 @@
+ENTRY(Reset_Handler)
+
+MEMORY
+{
+	FLASH(rx):ORIGIN =0x08000000,LENGTH =512K
+	SRAM(rwx):ORIGIN =0x20000000,LENGTH =128K
+}
+
+__max_heap_size = 0x200; /* A symbol declaration. Not a variable!!! */
+__max_stack_size = 0x400; /* A symbol declaration. Not a variable!!! */
+
+SECTIONS
+{
+	/* This section should include .text section of all input files */
+	.text :
+	{
+		/* merge all .isr_vector section of all input files */
+		*(.isr_vector)
+		/* merge all .text section of all input files */
+		*(.text)
+		/* merge all .rodata section of all input files */
+		*(.rodata)
+		. = ALIGN(4);
+		_etext = .; /* Store the updated location counter value into a symbol '_etext' */
+	}> FLASH 
+	/* >(vma)AT>(lma)   virtual memory address AT> load memory address */
+	/* >FLASH AT> FLASH  is the same as writing just FLASH */
+	
+	/* This section should include .data section of all input files */
+	.data :
+	{
+		_sdata = .; /* Assign a value to a symbol '_sdata' */
+		/* here merge all .data section of all input files */
+		*(.data)
+		. = ALIGN(4);
+		_edata = .; /* Store the updated location counter value into a symbol '_edata' */
+	}> SRAM AT> FLASH
+	/* >(vma)AT>(lma)   virtual memory address AT> load memory address */
+	
+	/* This section should include .bss section of all input files */
+	.bss :
+	{
+		_sbss = .; /* Assign a value to a symbol '_sdata' */
+		*(.bss)
+		*(COMMON)
+		. = ALIGN(4);
+		_ebss = .; /* Store the updated location counter value into a symbol '_ebss' */
+	}> SRAM
+	/* >(vma)AT>(lma)   virtual memory address AT> load memory address */
+}

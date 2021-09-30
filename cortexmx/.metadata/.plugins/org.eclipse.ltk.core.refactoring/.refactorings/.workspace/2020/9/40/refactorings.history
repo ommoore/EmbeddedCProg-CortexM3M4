@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Rename resource &apos;t_bit_notes&apos; to &apos;t_bit_notes_and_example&apos;" description="Rename resource &apos;t_bit_notes&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="/t_bit_notes" name="t_bit_notes_and_example" stamp="1601230511333" updateReferences="true"/>
+</session>

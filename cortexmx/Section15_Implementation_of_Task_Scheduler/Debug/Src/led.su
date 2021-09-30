@@ -1,0 +1,4 @@
+led.c:7:6:delay	24	static
+led.c:13:6:led_init_all	16	static
+led.c:57:6:led_on	24	static
+led.c:64:6:led_off	24	static

@@ -1,0 +1,1 @@
+Udemy FastBit Embedded C Programming course projects using STM32 Nucleo-F446RE board. STM32CubeIDE, STM32CubeProgrammer used. Be sure to excluse all examples but the desired one from build.
