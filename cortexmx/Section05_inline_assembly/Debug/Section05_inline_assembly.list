@@ -27,24 +27,24 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   ALLOC
  11 .ARM.attributes 0000002a  00000000  00000000  00010304  2**0
                   CONTENTS, READONLY
- 12 .debug_info   000000c5  00000000  00000000  0001032e  2**0
-                  CONTENTS, READONLY, DEBUGGING
- 13 .debug_abbrev 00000077  00000000  00000000  000103f3  2**0
-                  CONTENTS, READONLY, DEBUGGING
- 14 .debug_aranges 00000048  00000000  00000000  00010470  2**3
-                  CONTENTS, READONLY, DEBUGGING
- 15 .debug_ranges 00000030  00000000  00000000  000104b8  2**3
-                  CONTENTS, READONLY, DEBUGGING
- 16 .debug_macro  00000a77  00000000  00000000  000104e8  2**0
-                  CONTENTS, READONLY, DEBUGGING
- 17 .debug_line   000000d5  00000000  00000000  00010f5f  2**0
-                  CONTENTS, READONLY, DEBUGGING
- 18 .debug_str    00002d80  00000000  00000000  00011034  2**0
-                  CONTENTS, READONLY, DEBUGGING
- 19 .comment      0000007b  00000000  00000000  00013db4  2**0
+ 12 .debug_info   000000cc  00000000  00000000  0001032e  2**0
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 13 .debug_abbrev 0000007d  00000000  00000000  000103fa  2**0
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 14 .debug_aranges 00000048  00000000  00000000  00010478  2**3
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 15 .debug_ranges 00000030  00000000  00000000  000104c0  2**3
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 16 .debug_macro  00000ab9  00000000  00000000  000104f0  2**0
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 17 .debug_line   000000e5  00000000  00000000  00010fa9  2**0
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 18 .debug_str    00002e3b  00000000  00000000  0001108e  2**0
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
+ 19 .comment      00000053  00000000  00000000  00013ec9  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  00000058  00000000  00000000  00013e30  2**2
-                  CONTENTS, READONLY, DEBUGGING
+ 20 .debug_frame  00000058  00000000  00000000  00013f1c  2**2
+                  CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
 
@@ -257,29 +257,29 @@ Infinite_Loop:
 
 0800029c <__libc_init_array>:
  800029c:	b570      	push	{r4, r5, r6, lr}
- 800029e:	4e0d      	ldr	r6, [pc, #52]	; (80002d4 <__libc_init_array+0x38>)
+ 800029e:	4d0d      	ldr	r5, [pc, #52]	; (80002d4 <__libc_init_array+0x38>)
  80002a0:	4c0d      	ldr	r4, [pc, #52]	; (80002d8 <__libc_init_array+0x3c>)
- 80002a2:	1ba4      	subs	r4, r4, r6
+ 80002a2:	1b64      	subs	r4, r4, r5
  80002a4:	10a4      	asrs	r4, r4, #2
- 80002a6:	2500      	movs	r5, #0
- 80002a8:	42a5      	cmp	r5, r4
+ 80002a6:	2600      	movs	r6, #0
+ 80002a8:	42a6      	cmp	r6, r4
  80002aa:	d109      	bne.n	80002c0 <__libc_init_array+0x24>
- 80002ac:	4e0b      	ldr	r6, [pc, #44]	; (80002dc <__libc_init_array+0x40>)
+ 80002ac:	4d0b      	ldr	r5, [pc, #44]	; (80002dc <__libc_init_array+0x40>)
  80002ae:	4c0c      	ldr	r4, [pc, #48]	; (80002e0 <__libc_init_array+0x44>)
  80002b0:	f000 f818 	bl	80002e4 <_init>
- 80002b4:	1ba4      	subs	r4, r4, r6
+ 80002b4:	1b64      	subs	r4, r4, r5
  80002b6:	10a4      	asrs	r4, r4, #2
- 80002b8:	2500      	movs	r5, #0
- 80002ba:	42a5      	cmp	r5, r4
+ 80002b8:	2600      	movs	r6, #0
+ 80002ba:	42a6      	cmp	r6, r4
  80002bc:	d105      	bne.n	80002ca <__libc_init_array+0x2e>
  80002be:	bd70      	pop	{r4, r5, r6, pc}
- 80002c0:	f856 3025 	ldr.w	r3, [r6, r5, lsl #2]
+ 80002c0:	f855 3b04 	ldr.w	r3, [r5], #4
  80002c4:	4798      	blx	r3
- 80002c6:	3501      	adds	r5, #1
+ 80002c6:	3601      	adds	r6, #1
  80002c8:	e7ee      	b.n	80002a8 <__libc_init_array+0xc>
- 80002ca:	f856 3025 	ldr.w	r3, [r6, r5, lsl #2]
+ 80002ca:	f855 3b04 	ldr.w	r3, [r5], #4
  80002ce:	4798      	blx	r3
- 80002d0:	3501      	adds	r5, #1
+ 80002d0:	3601      	adds	r6, #1
  80002d2:	e7f2      	b.n	80002ba <__libc_init_array+0x1e>
  80002d4:	080002fc 	.word	0x080002fc
  80002d8:	080002fc 	.word	0x080002fc

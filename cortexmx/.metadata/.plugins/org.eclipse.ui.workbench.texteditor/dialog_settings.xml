@@ -4,8 +4,9 @@
 		<item key="casesensitive" value="true"/>
 		<item key="wholeword" value="false"/>
 		<item key="isRegEx" value="false"/>
-		<item key="selection" value="READY"/>
+		<item key="selection" value=""/>
 		<list key="findhistory">
+			<item value="ITM"/>
 			<item value="RUNNING"/>
 			<item value="g_tick_count"/>
 			<item value="busfault"/>

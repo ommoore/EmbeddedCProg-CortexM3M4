@@ -1,0 +1,4788 @@
+----------------------------------------------------------------------------
+Section03_HelloWorld
+----------------------------------------------------------------------------
+. Using ITM trace through SWO trace line (SWD) from ST-LINK debug connection. View in debug mode with SWV ITM Data Console.
+
+----------------------------------------------------------------------------
+Section03_HelloWorld_semihosting
+----------------------------------------------------------------------------
+. changed linker flag arguments, also changed debugger to OpenOCD.
+	//Properties -> C/C++ Build -> Settings -> MCU GCC Linker -> Misc -> Other flags -> -specs=rdimon.specs -lc -lrdimon
+. Added semihosting run command
+	//Edit Launch Configuration Properties -> Startup -> monitor arm semihosting enable
+. excluded syscalls.c from build
+
+main.c:
+extern void initialise_monitor_handles(void);
+initialise_monitor_handles();
+
+syscalls.c (typically)
+void initialise_monitor_handles()
+{
+}
+
+----------------------------------------------------------------------------
+Section04_access_levels
+----------------------------------------------------------------------------
+syscalls.c
+
+#define PROC_CM3_CM4
+
+//#define PROC_CM7  /* if you are using arm cortex m7,  un-comment this macro and comment out above macro*/
+
+#ifdef PROC_CM3_CM4
+
+//Debug Exception and Monitor Control Register base address
+#define DEMCR        			*((volatile uint32_t*) 0xE000EDFCU )
+
+/* ITM register addresses */
+#define ITM_STIMULUS_PORT0   	*((volatile uint32_t*) 0xE0000000 )
+#define ITM_TRACE_EN          	*((volatile uint32_t*) 0xE0000E00 )
+
+void ITM_SendChar(uint8_t ch)
+{
+
+	//Enable TRCENA
+	DEMCR |= ( 1 << 24);
+
+	//enable stimulus port 0
+	ITM_TRACE_EN |= ( 1 << 0);
+
+	// read FIFO status in bit [0]:
+	while(!(ITM_STIMULUS_PORT0 & 1));
+
+	//Write to ITM stimulus port0
+	ITM_STIMULUS_PORT0 = ch;
+}
+#endif
+
+void initialise_monitor_handles()
+{
+}
+
+__attribute__((weak)) int _write(int file, char *ptr, int len)
+{
+	int DataIdx;
+
+	for (DataIdx = 0; DataIdx < len; DataIdx++)
+	{
+		//__io_putchar(*ptr++);
+		ITM_SendChar(*ptr++);
+	}
+	return len;
+}
+
+main.c
+
+/* This function executes in THREAD MODE of the processor */
+void generate_interrupt()
+{
+	//these control register addresses cannot be changed in unprivileged mode.
+	//any attempt to change contents in unpriv access level will result in processor fault exception
+	uint32_t *pSTIR  = (uint32_t*)0xE000EF00;
+	uint32_t *pISER0 = (uint32_t*)0xE000E100;
+
+	//enable IRQ3 interrupt
+	*pISER0 |= ( 1 << 3);   //ISER = interrupt set-enable register
+
+	//generate an interrupt from software for IRQ3
+	*pSTIR = (3 & 0x1FF); //STIR = Software Trigger Interrupt Register
+
+}
+
+void change_access_level_unpriv(void)
+{
+	//read
+	__asm volatile ("MRS R0,CONTROL");
+	//modify
+	__asm volatile ("ORR R0,R0,#0x01");
+	//write
+	__asm volatile ("MSR CONTROL,R0");
+}
+
+
+/* This function executes in THREAD MODE of the processor */
+int main(void)
+{
+	printf("In thread mode : before interrupt\n");
+
+	//RTOS always launch user tasks in unprivileged access level
+	//RTOS has two components: kernel level and user level tasks.
+	//user task should not modify system level settings of processor
+	//user task should not trigger or turn off interrupts
+	//before running user task, the kernel can change access level to unpriv then it can launch user task
+	//if the unpriv code wants any services, then it can trigger syscall which is serviced by the kernel code
+
+	change_access_level_unpriv();
+
+	generate_interrupt();
+
+	printf("In thread mode : after interrupt\n");
+
+	//       how to switch back??
+
+	// first we went control = 0 -> control = 1 (priv to unpriv)
+	// cannot modify control register after switching to unpriv
+	// gotta move from thread mode to handler mode to make this change
+	// ISR always is privileged access level (control = 0)
+	// to change back to privilege you have to trigger interrupt or system exception
+	// then go to Handler mode to modify control = 1 there, then return to thread mode
+
+
+	for(;;);
+}
+
+/* This function(ISR) executes in HANDLER MODE of the processor */
+void RTC_WKUP_IRQHandler(void)
+{
+	printf("In handler mode : ISR\n");
+}
+
+/* fault handler catches exception */
+void HardFault_Handler(void)
+{
+	printf("Hard fault detected\n");
+	while(1);
+}
+
+----------------------------------------------------------------------------
+Section04_operation_modes
+----------------------------------------------------------------------------
+main.c
+/* This function executes in THREAD MODE of the processor */
+void generate_interrupt()
+{
+	uint32_t *pSTIR  = (uint32_t*)0xE000EF00;
+	uint32_t *pISER0 = (uint32_t*)0xE000E100;
+
+	//enable IRQ3 interrupt
+	*pISER0 |= ( 1 << 3);
+
+	//generate an interrupt from software for IRQ3
+	*pSTIR = (3 & 0x1FF);
+
+}
+
+/* This function executes in THREAD MODE+ PRIV ACCESS LEVEL of the processor */
+int main(void)
+{
+	printf("In thread mode : before interrupt\n");
+
+	generate_interrupt();
+
+	printf("In thread mode : after interrupt\n");
+
+	for(;;);
+}
+
+/* This function(ISR) executes in HANDLER MODE of the processor */
+void RTC_WKUP_IRQHandler(void)
+{
+	printf("In handler mode : ISR\n");
+}
+----------------------------------------------------------------------------
+Section05_inline_assembly
+----------------------------------------------------------------------------
+int main(void)
+{
+	__asm volatile("LDR R1,=#0x20001000");
+	__asm volatile("LDR R2,=#0x20001004");
+	__asm volatile("LDR R0,[R1]");
+	__asm volatile("LDR R1,[R2]");
+	__asm volatile("ADD R0,R0,R1");
+	__asm volatile("STR R0,[R2]");
+
+	//MOVE CONTENT OF 'C' VARIABLE 'VAL' TO ARM REGISTER R0
+	// __asm volatile("assembly op, operand indexing using %# (%0 is 1st op, %1 is 2nd op)": output op (empty) : constraint string 0-n 'r' is 
+	//constraint character, val is c variable)
+	int val = 50;
+	__asm volatile("MOV R0, %0": : "r"(val));
+
+
+	//MRS move from special register to register (read from special reg)
+	//MSR move from register to special register (write to special reg)
+	//CONTROL register is a special register
+
+	int control_reg;
+	//read CONTROL register to control_reg
+	__asm volatile("MRS %0,CONTROL":"=r"(control_reg)::);
+
+
+	// "=r" "+r" "&r"
+	// = write-only, used for all output operands
+	// + read-write operand, must be listed as an output operand
+	// & a register that should be used for output only
+
+	int var1 = 10, var2;
+
+	__asm("MOV %0, %1": "=r"(var2): "r"(var1));
+	//         Dst Src       OUTPUT     INPUT
+
+	//copy the contents of a pointer into another variable
+	int p1, *p2;
+	p2 = (int*)0x20000008;
+	__asm volatile("LDR %0,[%1]": "=r"(p1): "r"(p2)); //p1 = *p2
+	//                  Dst Src     OUTPUT    INPUT
+
+	for(;;);
+}
+----------------------------------------------------------------------------
+Section06_reset_sequence_notes
+----------------------------------------------------------------------------
+/*
+	 * 1) When processor is reset, PC (program counter) is loaded with the value 0x0000_0000
+	 *
+	 * 2) Next, processor reads in the value at memory location 0x0000_0000  to MSP (main stack pointer)
+	 * MSP = value @ 0x0000_0000
+	 * MSP is the Main Stack Pointer register
+	 * This means that the processor first initializes the stack pointer (SP)
+	 *
+	 * 3) Afterwards, the processor reads the value at memory location 0x0000_0004 into PC (program counter)
+	 * That value is the address of the Reset Handler.
+	 *
+	 * 4) Program Counter (PC) jumps to the Reset Handler
+	 *
+	 * 5) A Reset Handler is a C or Assembly function written by user to carry out any initializations required.
+	 *
+	 * 6) The Reset Handler calls the main() function of the application at the very end; after initializations.
+	 *
+	 *
+	 *
+	 * Startup File   (vector table directs processor to execute Reset handler after reset)
+	 *
+	 * Reset_handler()
+	 * {
+	 *
+	 * 	//first piece of code which gets executed after reset
+	 *
+	 * 	//initializations
+	 *
+	 * 	main();
+	 *
+	 * }
+	 *
+	 * (Processor Reset) -> [Initialize data section] -> [Initialize bss section] -> [Initialize 'C' std library: "__libc_init_array();"] -> [main();]
+	 *
+	 * This file is found under "Startup" Folder > "startup_stm32f4xxxx.s"
+	 *
+	 *  */
+----------------------------------------------------------------------------
+Section07_t_bit_notes_and_example
+----------------------------------------------------------------------------
+/* This function executes in THREAD MODE of the processor */
+void generate_interrupt()
+{
+	//these control register addresses cannot be changed in unprivileged mode.
+	//any attempt to change contents in unpriv access level will result in processor fault exception
+	uint32_t *pSTIR  = (uint32_t*)0xE000EF00;
+	uint32_t *pISER0 = (uint32_t*)0xE000E100;
+
+	//enable IRQ3 interrupt
+	*pISER0 |= ( 1 << 3);   //ISER = interrupt set-enable register
+
+	//generate an interrupt from software for IRQ3
+	*pSTIR = (3 & 0x1FF); //STIR = Software Trigger Interrupt Register
+
+}
+
+void change_access_level_unpriv(void)
+{
+	//read
+	__asm volatile ("MRS R0,CONTROL");
+	//modify
+	__asm volatile ("ORR R0,R0,#0x01");
+	//write
+	__asm volatile ("MSR CONTROL,R0");
+}
+
+
+int main(void)
+{
+	/*
+	 * 1) Various ARM processors support ARM-Thumb inter-working, ie. the ability to switch between ARM and Thumb states.
+	 *
+	 * 2) The processor must be in ARM state to execute instructions from ARM ISA. The processor must be in Thumb state to execute instructions
+	 *    of Thumb ISA.
+	 *
+	 * 3) If "T" bit of the EPSR is set(1), processor thinks the next instruction it is about to execute is from Thumb ISA.
+	 *
+	 * 4) If "T" bit of the EPSR is reset(0), processor thinks that the next instruction which it is about to execute is from ARM ISA.
+	 *
+	 * 5) The Cortex-MX processor does not support the "ARM" state.
+	 *    Hence, the value of "T" bit must always be 1.
+	 *    Failing to maintain this is illegal and will result in the "Usage fault" Exception
+	 *
+	 * 6) The LSB (bit 0) of the program counter (PC) is linked to this "T" bit.
+	 *    When you load a value or an address in to PC the Bit[0] of the value is loaded into "T" bit.
+	 *
+	 * 7) Hence, any address you place in the PC must have its 0th bit as 1.
+	 *    This is usually taken care of by the compiler and programmers don't need to worry most of the time.
+	 *
+	 * 8) This is the reason why you see all vector addresses are incremented by 1 in the vector table.
+	 */
+
+	printf("In thread mode : before interrupt\n");
+
+	void (*func_ptr)(void);
+
+	func_ptr = change_access_level_unpriv; //initialized pointer to the address of this function
+
+	func_ptr(); //call function by dereferencing function pointer and jump to function
+
+	//compiler changes address by incrementing 1 (to set T-bit to 1)
+	//true address is even, not odd.
+
+	printf("In thread mode : after interrupt\n");
+
+	for(;;);
+}
+
+/* This function(ISR) executes in HANDLER MODE of the processor */
+void RTC_WKUP_IRQHandler(void)
+{
+	printf("In handler mode : ISR\n");
+}
+
+/* fault handler catches exception */
+void HardFault_Handler(void)
+{
+	printf("Hard fault detected\n");
+	while(1);
+}
+
+----------------------------------------------------------------------------
+Section08_bit_band_exercise
+----------------------------------------------------------------------------
+#define ALIAS_BASE 0x22000000U
+#define BITBAND_BASE 0x20000000U
+
+int main(void)
+{
+	//Q1. Calculate the bit band alias address for given bit band memory address and bit position.
+	//Q2. 7th bit position of the memory location 0x2000_0200 using its alias address
+
+	//General Formula:
+	//Alias address = alias_base + (32 * (bit_band_memory_addr - bit_band_base)) + bit * 4
+
+	//A1.             0x2200 0000 + [32 * (0x2000 0200 - 0x2000 0000)] + 7 * 4 =
+
+	uint8_t *ptr = (uint8_t*)0x20000200;
+
+	//reset to 0xff
+	*ptr = 0xff;
+
+	//normal method
+	*ptr &= ~(1 << 7);
+
+	//reset to 0xff
+	*ptr = 0xff;
+
+	//bit-band method
+	uint8_t *alias_addr = (uint8_t*) (ALIAS_BASE + (32 * (0x20000200 - BITBAND_BASE)) + 7 * 4);
+
+	//clearing 7th bit of address 0x20000200
+	*alias_addr = 0;
+
+	for(;;);
+}
+
+----------------------------------------------------------------------------
+Section09_stack_exercise
+----------------------------------------------------------------------------
+/*
+ * Stack memory is part of the main memory (internal or external RAM) reserved for temporary storage of data (transient data).
+ * Mainly used during function, interrupt/exception handling
+ * Stack memory is accessed in LIFO (last in first out)
+ * The stack can be accessed using PUSH and POP instructions or using any memory manipulation instructions (LD,STR)
+ * The stack is traced using a stack pointer (SP) register. PUSH and POP instructions affect (decrement/increment) stack pointer register (SP,R13).
+ *
+ *     __Stack memory uses:__
+ * 1. The temporary storage of processor register values
+ * 2. The temporary storage of local variables of the function
+ * 3. During system exception or interrupt, stack memory will be used to save the context (some general purpose registers,
+ *  processor status register, return address) of the currently executing code.
+ *
+ *   SRAM (128KB) split into a few parts:
+ *   Global Data:
+ *   Part of RAM is utilized when the program contains global data and static local variables. You can even store instructions and execute from this 
+ *   "global" area
+ *
+ *   Heap:
+ *   Another part of RAM is utilized during dynamic memory allocation (heap)
+ *
+ *   Stack:
+ *   Utilized during function call to save temporary data, Temporary storage of local variables of the function, temporary storage of stack frames
+ *   during interrupts and exceptions.
+ *
+ *   In ARM Cortex MX, stack model is (FD) full descending.
+ *   PUSH decrements SP, POP increments SP
+ *
+ *   Stack Types (PUSH/POP):
+ *   Full Ascending/Descending (full points to latest filled location)
+ *   Empty Ascending/Descending (empty points to next empty location)
+ *
+ *   __Banked Stack Pointers__
+ *   1. Cortex M Processor physically has 3 stack pointers: SP(R13), MSP and PSP
+ *   MSP: Main stack pointer
+ *   PSP: Processor stack pointer
+ *
+ *   SP is called as current stack pointer.
+ *
+ *   2. After processor reset, by default, MSP will be selected as current stack pointer. That means SP copies the contents of MSP.
+ *
+ *   3. Thread mode can change the current stack pointer to PSP by configuring the CONTROL register's SPSEL bit.
+ *
+ *   4. Handler mode code execution will always use MSP as the current stack pointer. That also means, changing the value of
+ *   SPSEL bit being in the handler mode doesn't make any sense. The write will be ignored.
+ *
+ *	 5. MSP will be initialized automatically by the processor after reset by reading the content of the address 0x0000 0000
+ *
+ *	 6. If you want to use the PSP then make sure that you initialize the PSP to valid stack address in your code.
+ *
+ *   __For Thread mode:__
+ *   If SPSEL = 0, current SP(R13) = MSP
+ *   If SPSEL = 1, current SP(R13) = PSP
+ */
+#include <stdio.h>
+
+#define SRAM_START 			0x20000000U
+#define SRAM_SIZE 			(128 * 1024)
+#define SRAM_END 			((SRAM_START) + (SRAM_SIZE))
+#define STACK_START 		SRAM_END
+
+#define STACK_MSP_START 	STACK_START
+#define STACK_MSP_END 		(STACK_START + 512)
+#define STACK_PSP_START		STACK_MSP_END
+
+int func_add(int a, int b, int c, int d)
+{
+	return a+b+c+d;
+}
+
+__attribute__((naked)) void change_sp_to_psp(void)
+{
+	__asm volatile(".equ SRAM_END, (0x20000000 + ( 128 * 1024))");
+	__asm volatile(".equ PSP_START, (SRAM_END-512)");
+	__asm volatile("LDR R0, =PSP_START");
+	__asm volatile("MSR PSP, R0");
+	__asm volatile("MOV R0, #0X02");
+	__asm volatile("MSR CONTROL,R0");
+	__asm volatile("BX LR");
+}
+
+void generate_exception(void)
+{
+	__asm volatile("SVC #0X2");
+}
+
+int main(void)
+{
+
+	change_sp_to_psp();
+	int ret;
+
+	ret = func_add(1,4,5,6);
+
+	printf("result = %d\n",ret);
+
+	generate_exception();
+
+	for(;;);
+}
+
+void SVC_Handler(void)
+{
+	printf(" in SVC_Handler\n");
+}
+
+/*  		__MSP, PSP summary__
+ *  1. Physically there are 2 stack pointer registers in Cortex-M Processors
+ *  2. Main Stack Pointer (MSP): This is the default stack pointer used after reset, and is used for all exception/interrupt handlers
+ *     and for codes which run in thread mode.
+ *  3. Process Stack Pointer (PSP): This is an alternate stack pointer that can only be used in thread mode. It is usually used for application
+ *     task in embedded systems and embedded OS.
+ *  4. After power-up, the processor automatically initializes the MSP by reading the first location of the vector table.
+ *
+ *     __Changing SP__
+ *  To access MSP and PSP in assembly code, you can use the MSR and MRS instructions.
+ *  In a C program you can write a naked function ('C' like assembly function which doesn't have epilogue and prologue sequences) to change
+ *  the currently selected stack pointer.
+ *
+ *
+ *  	__Procedure Call Standard for the ARM Architecture (AAPCS)__
+ *  . R0, R1, R2, R3, R12, R14(LR) registers are called the "caller saved registers", it's the responsibility of the caller to save these
+ *    registers on stack before calling the function if those values will still be needed after the function call and retrieve it back once
+ *    the called function returns. Register values that are not required after the function call don't have to be saved.
+ *  . R4 to R11 are called "callee saved registers". The function or subroutine being called needs to make sure that, contents of these
+ *    registers will be unaltered before exiting the function.
+ *  . According to this standard, caller function uses R0,R1,R2,R3 registers to send input arguments to the callee function.
+ *  . The callee function uses registers R0 and R1 to send the result back to the caller function.
+ *
+ *    https://static.docs.arm.com/ihi0042/g/aapcs32.pdf
+ *
+ *    directory path to check out::   /stack_exercise/Debug/stack.list
+ *
+ *    __Interrupt/Exception Handler case__
+ *    The processor saves "caller saved registers" since there is no caller for interrupt or exception handler.
+ *    So, you can write an interrupt/exception handler as normal 'c' function without worrying about AAPCS rules.
+ *    Hardware saves "Stack Frame" -> [R0,R1,R2,R3,R12  LR,PC,XPSR] onto the Stack (with stacking and unstacking as exception is entered/exited)
+ *
+ *    __Stack Initialization__
+ *    Before reaching main (done by processor reset which reads first location of vector table from startup code)
+ *    After reaching main function, you may again reinitialize the stack pointer.
+ *
+ *    __Stack Initialization Tips__
+ *    1) Evaluate your targeted application. Decide the amount of stack that would be needed for the worst-case scenario of your application runtime.
+ *    2) Know your processor's stack consumption model (FD,FA,ED,EA)
+ *    3) Decide stack placement in the RAM (middle, end, external memory)
+ *    4) In many applications, there may be second stage stack init. For example, if you want to allocate stack in external SDRAM then first start with
+ *       internal RAM, in the main or startup code initialize the SDRAM then change the stack pointer to point to SDRAM.
+ *    5) If you are using the ARM Cortex MX processor, make sure that the first location of the vector table contains the initial stack address (MSP).
+ *       The startup code of the project usually does this.
+ *    6) You may also use the linker script to decide the stack, heap, and other RAM area boundaries. Startup code usually fetches boundary information
+ *       from linker scripts.
+ *    7) In an RTOS scenario, the kernel code may use MSP to trace its own stack and configure PSP for user task's stack.
+ */
+
+----------------------------------------------------------------------------
+Section10_exception_model
+----------------------------------------------------------------------------
+/*
+ * Cortex M processor Exception Model (M0, M1, M3, M4, M7)
+ *
+ * 1) What is an exception?
+ *    Anything which disturbs the normal operation of the program by changing the operational mode of the processor.
+ *
+ * There are 2 types of exceptions:
+ * 1) system exceptions
+ * 2) interrupts
+ *
+ * What are system exceptions?
+ * They are generated by the processor itself internally. Interrupts come from the external world to the processor.
+ *
+ * Whenever the processor core meets with an exception it changes the operational mode to Handler Mode.
+ *
+ * There are in total 15 system exceptions supported by the Cortex M processors, and 240 Interrupts.
+ * So, in total Cortex M processors support 255 exceptions.
+ *
+ * __Different System Exceptions__
+ * 1) There is room for 15 system exceptions.
+ * 2) Exception number 1 is Reset Exception (or system exception)
+ * 3) Only 9 implemented System Exceptions. 6 are reserved for future implementations.
+ * 4) Exception number 16 is Interrupt 1 (IRQ1)
+ *
+ * Exceptions:
+ * 1) Reset 					   (prio -3 -- highest)
+ * 2) NMI (non maskable interrupt) (prio -2)
+ * 3) HardFault 				   (prio -1)
+ * 4) MemManage					   (vv configurable prio vv)
+ * 5) BusFault
+ * 6) UsageFault
+ * 7-10) Reserved
+ * 11) SVCall
+ * 12-13) Reserved
+ * 14) PendSV
+ * 15) SysTick
+ * 16+) Interrupt (IRQ)
+ *
+ * Core Peripheral Registers (PPB - Private Peripheral Bus)
+ *
+ * __System Control Block (SCB)__
+ * The System Control Block (SCB) provides system implementation information and system control. This includes configuration, control, and reporting of the system exceptions.
+ * Explore registers from ARM Cortex M4 generic user guide.
+ *
+ * __SCB Registers:__
+ * You can enable fault handlers
+ * Get pending status of the fault exceptions
+ * Trap processor for divide by zero and unaligned data access attempts
+ * Control sleep and sleep wakeup settings
+ * Configure the priority of system exceptions
+ * Systick timer control and status
+ *
+ *
+ */
+ 
+----------------------------------------------------------------------------
+Section10_NVIC
+----------------------------------------------------------------------------
+/*
+ *  __NVIC (Nester Vector Interrupt Controller) Discussion__
+ *  1) NVIC is one of the peripherals of the Cortex M processor core.
+ *  2) It is used to configure the 240 interrupts.
+ *  3) Using NVIC registers you can enable/disable/pend various interrupts and read the status of the active and pending interrupts.
+ *  4) You can configure the priority and priority grouping of various interrupts.
+ *  5) Its called "Nested" because, it supports pre-empting a low priority interrupt handler when higher priority interrupt arrives.
+ *
+ *	__Enable/Disable/Pend various interrupts using NVIC register__
+ *	1) Cortex M processor supports 240 interrupts
+ *	2) These interrupts are managed and configured using NVIC
+ *	3) What are those 240 interrupts?
+ *	   This is highly vendor specific and it is triggered by various on-chip peripherals of the MCU like SPI, gpios, CAN, timers, dmas, etc.
+ *	   STM32F446 MCU delivers 97 different (IRQ) interrupts to the processor
+ *
+ *	  32bit registers
+ *	ISER (Interrupt Set-enable Registers) = set interrupts
+ *	ICER (Interrupt Clear-enable Registers) = clear interrupts
+ *	ISPR (Interrupt Set-pending Registers) = pend interrupts
+ *	ICPR (Interrupt Clear-pending Registers) = clear pending interrupts
+ *	IABR (Interrupt Active Bit Registers) = used to check interrupt active flags
+ *
+ *
+ *	Exercise:
+ *	Enabling and Pending of USART3 Interrupt (IRQ39 of NVIC)
+ *
+ *	Steps to program an MCU peripheral interrupt
+ *	. Identify the IRQ number of the peripheral by referring to the MCU vector table. IRQ numbers are vendor-specific
+ *	. Program the Processor register to enable the IRQ (only when you enable the IRQ, the processor will accept the interrupt over that line). Set priority (optional)
+ *	. Configure the peripheral (USART3) using its peripheral configuration register. For example, in the case of USART3, whenever a packet is received,
+ *	  it will automatically issue an interrupt on the IRQ line 39.
+ *	. When the interrupt is issued on the IRQ line, it will first get pended in the pending register of the processor.
+ *	. NVIC will allow the IRQ handler associated with the IRQ number to run only if the priority of the new interrupts higher than the currently executing interrupt handler.
+ *	  Otherwise newly arrived interrupt will stay in pending state.
+ *	. Please note that if peripheral issues an interrupt when the IRQ number is disabled (not activated from the processor side), then still interrupt will get pended in
+ *	  the pending register of the NVIC. As soon as IRQ is enabled, it will trigger the execution of the ISR if the priority is higher than the currently active ISR.
+ *
+ *	 1) lets say Data packet arrives from external world into the USART peripheral buffer [USART RX buffer]
+ *	 2) USART peripheral issues an interrupt
+ *	 3) NVIC: Interrupt pends in the pending register of the NVIC (IRQ enable = 1)
+ *	 4) CPU: 1) fetches the ISR address from the vector table
+ *	         2) PC jumps to ISR
+ *	 5) ISR: Copies data from RX buffer to SRAM
+ */
+
+#define USART3_IRQNO 39
+
+int main(void)
+{
+	//1. Manually pend the pending bit for the USART3 IRQ number in NVIC
+	//IRQ39 == USART3  so we have to use ISPR1 register since ISPR0 includes IRQ[31:0] while ISPR1 includes IRQ[63:32]
+	uint32_t *pISPR1 = (uint32_t*)0xE000E204;
+	*pISPR1 |= (1 << (USART3_IRQNO % 32));    //sets 7th bit of ISPR1 (39 % 32 = 7)
+
+	//2. Enable the USART3 IRQ in NVIC
+	uint32_t *pISER1 = (uint32_t*)0xE000E104;
+	*pISER1 |= (1 << (USART3_IRQNO % 32));
+
+	for(;;);
+}
+
+//USART3 ISR
+void USART3_IRQHandler(void)
+{
+	printf("in USART3 isr\n");
+}
+
+----------------------------------------------------------------------------
+Section11_Interrupt_priority_config
+----------------------------------------------------------------------------
+/*
+ * Relationship between priority value & priority
+ *
+ *   ADC : priority 5    -> NVIC <-> CPU
+ * Timer : priority 4    -> NVIC <-> CPU
+ *
+ * . In this case, Timer peripheral priority value is lower than the priority value of ADC;
+ *   hence TIMER interrupt is more URGENT than ADC interrupt.
+ * . So, we say TIMER priority is HIGHER than ADC priority.
+ * . If both interrupt hits the NVIC at the same time, NVIC allows TIMER interrupt first, so,
+ *   TIMER ISR will be executed first by the processor.
+ *
+ *   For ARM Cortex MX: lower priority value = higher priority (urgency)
+ *
+ *	 STM32F4x MCU has 16 different priority values.
+ *	 Interrupt Priority register is part of NVIC register set.
+ *	 The NVIC_IPR[0:59] registers provide 8 bit priority field for each interrupt and each register
+ *	 holds 4 priority fields. These registers are byte-accessible.
+ *
+ *	 Bits      Name                       Function
+ *	 [31:24]   Priority, byte offset 3    Each implementation-defined priority field can hold a priority value, 0-255.
+ *	 [23:16]   Priority, byte offset 2    The lower the value, the greater the priority of the interrupt. Register priority
+ *	 [15:8]    Priority, byte offset 1    value fields are 8 bits wide, and non-implemented low-order bits read as zero
+ *	 [7:0]     Priority, byte offset 0    and ignore writes.
+ *
+ *	                                            Real implementation for STM32F4xx (vendor dependent).
+ *	Interrupt Priority Register implementation  Bit 7-4: implemented (16 priority levels)
+ *	                                            Bit 3-0: not implemented (write has no effect)
+ *
+ *          31       24 23      16 15       8 7       0
+ *   IPR59: | PRI_239  | PRI_238  | PRI_237  | PRI_236 |
+ *    ...
+ *	 IPRn:  | PRI_4n+3 | PRI_4n+2 | PRI_4n+1 | PRI_4n  |
+ *    ...
+ *	 IPR0:  |  PRI_3   |  PRI_2   |  PRI_1   |  PRI_0  |
+ *	        <--8bits--><--8bits--><--8bits--><--8bits-->
+ *	           IRQ3       IRQ2       IRQ1       IRQ0
+ *
+ *	 Priority levels (16): 0x00 (highest), 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90
+ *	                       0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0 (lowest)
+ *
+ *	 To change priority for exceptions, look for the SCB (system control block) registers
+ *	 instead of the NVIC registers (SHPR1, SHPR2, SHPR3 -- System Handler Priority register 1-3)
+ *
+ *	 	__Priority Grouping__
+ *
+ *	 Pre-Empt Priority: When the processor is running interrupt handler, and another interrupt appears, then the pre-empty priority 
+ *   				    values will be compared, and interrupt with higher pre-empt priority (less in value) will be allowed to run.	                    
+ *
+ *	 Sub Priority:      This value is used only when two interrupts with the same pre-empt priority values occur at the same time. 
+ *	                    In this case, the interrupt with higher sub-priority (less in value) will be handled first.
+ *
+ *	 Priority Group       Pre-empt priority field      sub-priority field
+ *	 0 (default)		  Bit[7:1]                     Bit[0]
+ *	 1 					  Bit[7:2]                     Bit[1:0]
+ *	 2 					  Bit[7:3]                     Bit[2:0]
+ *	 3 					  Bit[7:4]                     Bit[3:0]
+ *	 4 					  Bit[7:5]                     Bit[4:0]
+ *	 5 					  Bit[7:6]                     Bit[5:0]
+ *	 6 					  Bit[7:7]                     Bit[6:0]
+ *	 7 					  None                     	   Bit[7:0]
+ *
+ *	 			Interrupt Priority Register (STM32Fxx)
+ *   [                       P                       ][  S  ]
+ *	 [Bit 7][Bit 6][Bit 5][Bit 4][Bit 3][Bit 2][Bit 1][Bit 0]
+ *	 [       Implemented        ][      Not implemented     ]
+ *
+ *	To change the Priority Grouping, modify the "Application Interrupt and Reset Control Register" (PRIGROUP)
+ *
+ *	Case 1:
+ *	When the priority group = 0,
+ *	As per the table we have,
+ *	pre-empt priority width = 7 bits (128 programmable priority levels)
+ *	But only 3 bits are implemented, so, 8 programmable priority levels
+ *	sub-priority width = 1 (2 programmable sub-priority levels)
+ *	Bit 0 is not implemented so no sub-priority levels
+ *
+ *	Case2:
+ *	when the priority group = 5,
+ *	pre-empt priority width = 2 bits (4 programmable priority levels)
+ *	sub-priority width = 6 (64 programmable sub priority levels)
+ *	since only 1 bit is implemented, only 2 programmable sub-priority levels
+ *
+ *	Q. What if two interrupts of the same pre-empty priority and sub priority hit the processor at the same time?
+ *	Interrupt with the lowest IRQ number will be allowed first.
+ *
+ *	Exercise:
+ *
+ *	Generate the below peripheral interrupts using NVIC interrupt pending register and observe the execution of ISRs
+ *	when priorities are the same and different.
+ *	TIM2 global interrupt
+ *	I2C1 event interrupt
+ */
+
+#include<stdio.h>
+#include<stdint.h>
+
+#define IRQNO_TIMER2	28
+#define IRQNO_I2C1		31
+
+uint32_t *pNVIC_IPRBase = (uint32_t*)0xE000E400;
+uint32_t *pNVIC_ISERBase = (uint32_t*)0xE000E100;
+uint32_t *pNVIC_ISPRBase = (uint32_t*)0xE000E200;
+
+void configure_priority_for_irqs(uint8_t irq_no, uint8_t priority_value)
+{
+	//1. find out iprx
+	uint8_t iprx = irq_no / 4;
+	uint32_t *ipr = pNVIC_IPRBase + iprx;
+
+	//2. position in iprx
+	uint8_t pos = (irq_no % 4) * 8;
+
+	//3. configure the priority
+	*ipr &= ~(0xFF << pos); 	     //clear
+	*ipr |= (priority_value << pos); //set
+}
+
+int main(void)
+{
+	//1. Lets configure the priority for the peripherals
+	configure_priority_for_irqs(IRQNO_TIMER2, 0x80);
+	configure_priority_for_irqs(IRQNO_I2C1, 0x80); //0x70
+
+	//2. Set the interrupt pending bit in the NVIC PR
+	*pNVIC_ISPRBase |= (1 << IRQNO_TIMER2);
+
+	//3. Enable the IRQs in NVIC ISER
+	*pNVIC_ISERBase |= (1 << IRQNO_I2C1);
+	*pNVIC_ISERBase |= (1 << IRQNO_TIMER2);
+
+}
+
+//isrs
+
+void TIM2_IRQHandler(void)
+{
+	printf("[TIM2_IRQHandler]\n");
+	*pNVIC_ISPRBase |= (1 << IRQNO_I2C1); //interrupt nesting: if priority of nested interrupt is higher and preempts the current interrupt
+	while(1);
+}
+
+void I2C1_EV_IRQHandler(void)
+{
+	printf("[I2C1_EV_IRQHandler]\n");
+}
+
+/*
+ *         __Pending Interrupt Behavior__
+ *
+ *   Case 1: Single Pended Interrupt
+ *   	. Processor is operating in thread mode & interrupt request occurs (interrupt assertion - low to high transition) (Thread)
+ *   		. Pending bit is set (Interrupt pending status)
+ *   			. Processor accepts the interrupt and changes the mode to Handler Mode (stacking and vector fetch)
+ *   				. When the processor is executing the ISR, it sets the responding bit in the Interrupt Active Status register to 1
+ *   				  to indicate that the processor is busy servicing the interrupt, and it clears the pending bit inside the ISR. (Interrupt Handler)
+ *   					. When the processor is done with the ISR, it exits (exception return) and the Interrupt Active Status bit is cleared
+ *   					  meaning that the processor is no longer servicing interrupts.
+ *   						. (Unstacking) begins and processor resumes to (Thread) mode.
+ *
+ *   Case 2: Double Pended Interrupt
+ *		. Same steps as before when the first interrupt is asserted: Interrupt issued, ISR entered (IPS bit set), Processor goes from Thread mode to 
+ *      Handler mode,
+ *		  Interrupt active status bit is set, interrupt pending status (IPS) bit is cleared...  THEN
+ *			. A new interrupt is issued
+ *				. Interrupt pending bit set again
+ *					. Processor completes the ISR of the first interrupt and returns to Thread mode, Interrupt Active Status bit is cleared
+ *						. Since the Interrupt Pending Status bit is still asserted/active/set, the processor immediately reenters Handler mode
+ *							. Interrupt Pending Status bit is cleared once the processor starts executing the ISR and the Interrupt Active Status bit 
+ *                          is once again set/asserted/active.
+ *
+ */
+ 
+----------------------------------------------------------------------------
+Section12_Exception_Entry_and_Exit_Seqs
+----------------------------------------------------------------------------
+/*
+ * 		__Exception Entry Sequence__
+ *
+ * 	1. Pending bit set
+ * 	2. Stacking and Vector Fetch (simultaneously)
+ * 		Pushing contents of the registers into stack
+ * 		Fetching address of exception handler from vector table
+ * 	3. Entry into the handler and Interrupt Active bit set
+ * 	4. Clears the pending status (processor does it automatically)
+ * 	5. Processor mode changes to Handler mode
+ * 	6. Handler code executes
+ * 	7. The MSP will be used for any stack operations inside the handler
+ *
+ *		__Exception Exit Sequence__
+ *
+ *	. In Cortex M3/M4 processors, the exception return mechanism is triggered using a special return address called EXC_RETURN (0xFFFFFFFD)
+ *	. EXC_RETURN is generated during exception entry and is stored in the LR (LR = EXC_RETURN). Interrupt Event: Thread Mode -> Handler Mode 
+ *   (Stacking using PSP)
+ *	. When EXC_RETURN is written to PC it triggers the exception return (PC = LR). Exception Return: Handler Mode -> Thread Mode (Unstacking using PSP)
+ *
+ *		__EXC_RETURN__
+ *	When is it generated?
+ *
+ *	During an exception handler entry, the value of the return address (PC) is not stored in the LR as it is done during calling of a normal C function. 
+ *  Instead the exception mechanism stores the special value called EXC_RETURN in LR.
+ *
+ *		__Decoding EXC_RETURN value__
+ *
+ *	Bits  |     Descriptions     |  Values
+ *	----------------------------------------
+ *	31:28 | EXC_RETURN indicator |    0xF
+ *  27:5  |   Reserved (all 1)   |  0xEFFFFF
+ *   4    |   Stack frame type   | always 1 when FPU is not avail
+ *   3    |     Return mode      | 1 = return to thread mode, 0 = return to handler mode
+ *   2    |     Return stack     | 1 = return with PSP, 0 = return with MSP
+ *   1    |     Reserved         |     0
+ *   0    |     Reserved         |     1
+ *
+ *
+ *                 		( Exception Return Trigger )
+ *                 				 	  |
+ *   ( EXC_RETURN[2] = 0 )     		<- -> 	 	( EXC_RETURN[2] = 1 )
+ *             v                                  		  v
+ *   ( Un-stacking using MSP )          		( Un-stacking using PSP )
+ *             v                                          v
+ *   ( MSP selected, CONTROL[1] = 0 ) 		    ( PSP selected, CONTROL[1] = 1 )
+ *             |                                          |
+ *              -----> ( Resume program execution ) <------
+ *
+ *   So, EXC_RETURN ==
+ *       				0xFFFFFFF1 <-> Return to Handler mode, Exception return gets state from main stack, execution uses MSP after return
+ *      				0xFFFFFFF9 <-> Return to Thread mode, Exception return gets state from main stack, execution uses MSP after return
+ *      				0xFFFFFFFD <-> Return to Thread mode, Exception return gets state from process stack, execution uses PSP after return
+ *      				All other values <-> Reserved
+ *
+ *   Exercise:
+ */
+
+#include<stdio.h>
+#include<stdint.h>
+
+/* This function executes in THREAD MODE of the processor */
+void generate_interrupt()
+{
+	uint32_t *pSTIR  = (uint32_t*)0xE000EF00;
+	uint32_t *pISER0 = (uint32_t*)0xE000E100;
+
+	//enable IRQ3 interrupt
+	*pISER0 |= ( 1 << 3);
+
+	//generate an interrupt from software for IRQ3
+	*pSTIR = (3 & 0x1FF);
+
+}
+
+/* This function executes in THREAD MODE+ PRIV ACCESS LEVEL of the processor */
+int main(void)
+{
+	printf("In thread mode : before interrupt\n");
+
+	generate_interrupt();
+
+	printf("In thread mode : after interrupt\n");
+
+	for(;;);
+}
+
+/* This function(ISR) executes in HANDLER MODE of the processor */
+void RTC_WKUP_IRQHandler(void)
+{
+	printf("In handler mode : ISR\n");
+}
+
+----------------------------------------------------------------------------
+Section13_FaultHandling_and_Analysis
+----------------------------------------------------------------------------
+/*
+ * 		__Fault Handlers__
+ *
+ * 	What is a fault?
+ * 	. The fault is an exception generated by the processor (system exception) to indicate an error.
+ *
+ * 	Why does a fault happen?
+ * 	. Faults happen because of programmers violating the design rules of handling a processor or the interfaces with which the processor deals with.
+ *  . Whenever a fault happens, internal processor registers will be updated to record the type of fault, the address of instruction at which the 
+ *    fault happened, and if an associated exception is enabled, the exception handler will be called by the processor.
+ *  . In the exception handler programmers may implement the code to report, resolve, or recover from the fault.
+ *  . For example, if your code tries to divide a number by zero, then divide by 0 fault will be raised from the hardware, which will invoke usage fault
+ *    exception handler (if enabled). In the exception handler, you may make certain decisions to get rid of the problem, like closing the task, etc.
+ *  . Most of the time, fault happens by programmer's code not adhering to processor programming guidelines.
+ *
+ *	There are 9 system exceptions implemented in the processor.
+ *	Reset (highest priority), NMI, and HardFault exceptions have fixed (non-configurable) priority values.
+ *	HardFault, MemManage, BusFault, UsageFault are Fault Exceptions. These should all be taken care of by the programmer.
+ *
+ *	Hard fault exception*   {enabled by default, non-configurable priority}  Can disable using FAULTMASK register.
+ *	Usage fault exception         }
+ *	Mem manage fault exception    } Disabled by default, configurable priority.
+ *	Bus fault exception           }
+ *
+ *	Causes of fault
+ *	. Divide by zero (if enabled)
+ *	. Undefined instruction
+ *	. Attempt to execute code from memory region which is marked as execute never (XN) to prevent code injection
+ *	. MPU guarded memory region access violation by the code
+ *	. Unaligned data access (if enabled)
+ *	. Returning to thread mode keeping active interrupt alive
+ *	. Bus error (example no response from memory device (e.g., SDRAM))
+ *	. Executing SVC instruction inside SVC handler or calling a function in SVC handler which eventually execute hidden SVC instruction
+ *	. Debug monitor settings and related exceptions
+ *
+ *		__Hard-fault Exception__
+ *	A HardFault is an exception that occurs because of an error during exception processing, or because an exception cannot be managed by any other 
+ *  exception mechanism. It has 3rd highest fixed priority (-1) after reset and NMI meaning it has higher priority than any exception with configurable 
+ *  priority.
+ *
+ *	Causes:
+ *	1) Escalation of configurable fault exceptions
+ *	2) Bus error returned during a vector fetch
+ *	3) Execution of break point instruction when both halt mode and debug monitor is disabled
+ *	4) Executing SVC instruction inside SVC handler
+ *
+ *							__Flow Chart__
+ *
+ *									|  Configurable exceptions (usage, mem manage, bus fault)
+ *				 yes				v				      no
+ *				 -- [Is configurable exception enabled?]  ->   [Hardfault Handler]
+ *				|							    Escalated to hardfault (FORCED)
+ *				v
+ *	[Handled by configurable exception handlers]
+ *
+ *
+ *	[Bus fault during vector fetch from vector table]  ----------->  [Hardfault handler]
+ *												Always escalated to hardfault
+ *
+ *
+ *	Also,
+ *	         Thread Mode				    Handler Mode			   Handler Mode
+ *	[Execution of SVC instruction] -> [Execute SVC instruction] -> [Hard-fault handler]
+ *											SVC Handler
+ *
+ *				__HardFault Status Register (HFSR)__
+ *		This register is read, write to clear. This means that bits in this register read normally, but writing 1 to any bit clears that bit to 0.
+ *
+ *		Bits	Name		Function
+ *		[31]	DEBUGEVT	Reserved for Debug use. When writing to the register you must write 0 to this bit, otherwise behavior is unpredictable.
+ *		[30]	Forced		Indicates a forced hard fault, generated by escalation of a fault with config priority that cannot be handled, either b/c of 
+ *                          priority or b/c disabled:
+ *							0 = no forced HardFault
+ *							1 = forced HardFault
+ *							When this bit is set to 1, the HardFault handler must read the other fault status registers to find the cause of the fault.
+ *		[29:2]	-			Reserved
+ *		[1]		VECTTBL		Indicates a BusFault on a vector table read during exception processing:
+ *							0 = no BusFault on vector table read
+ *							1 = BusFault on vector table read
+ *							This error is always handled by the hard fault handler.
+ *							When this bit is set to 1, the PC value stacked for the exception return points to the instruction that was preempted by the 
+ *                          exception.
+ *		[0]		-			Reserved
+ *
+ *
+ *		__Mem Manage Fault Exception__
+ *	. This is a configurable fault exception. Disabled by default.
+ *	. You can enable this exception by configuring the processor register "System Handler Control and State Register (SHCSR)"
+ *	. When mem manage fault happens, mem manage fault exception handler will be executed by the processor.
+ *	. Priority of this fault exception is configurable.
+ *
+ *	4.3.9 System Handler Control and State Register
+ *		The SHCSR enables the system handlers, and indicates:
+ *		. The pending status of BusFault, MemManage fault, and SVC exceptions
+ *		. The active status of the system handlers
+ *
+ *	Causes of mem manage fault exception:
+ *	1) As its name indicates, this fault exception triggers when memory access violation is detected (access permission by the processor or MPU)
+ *	2) Unprivileged thread mode code (such as user app or RTOS task) tries to access a memory region which is marked as "privilege access only" by the 
+ *     MPU
+ *	3) Writing to memory regions which are marked as read-only by the MPU4
+ *	4) This fault can also be triggered when trying to execute program code from "peripheral" memory regions. Peripheral memory regions are marked as 
+ *     XN (eXecute Never) regions by the processor design to avoid code injection attacks through peripherals.
+ *
+ *	Causes of Bus-fault exception:
+ *	1) Due to error response returned by the processor bus interfaces during access to memory devices (during instruction fetch or during data 
+ *     read/write to memory devices).
+ *	2) If bus error happens during vector fetch, it will be escalated to a hard fault even if bus fault exception is enabled.
+ *	3) Memory device sends error response when the processor bus interface tries to access invalid or restricted memory locations which could generate 
+ *     a bus fault.
+ *	4) When the device is not read to accept memory transfer.
+ *	5) You may encounter such issues when you play with external memories such as SDRAM connected via DRAM controllers.
+ *	6) Unprivileged access to the private peripheral bus.
+ *
+ *	Usage Fault exception:
+ *	. This is a configurable fault exception. Disabled by default
+ *	. You can enable this exception by configuring the processor register "System Handler Control and State Register (SHCSR)"
+ *	. When usage fault happens, the processor executes usage fault exception handler.
+ *	. Priority of this fault exception is configurable.
+ *		Causes:
+ *	1) Execution of undefined instruction (Cortex M4 supports only Thumb ISA, so executing any instruction outside this ISA (like ARM ISA) would 
+ *     result in a fault).
+ *	2) Executing floating point instruction keeping floating point unit disabled.
+ *	3) Trying to switch to ARM state to execute ARM ISA instructions. The T bit of the processor decides ARM state or THUMB state. For Cortex M it 
+ *     should be maintained at 1.
+ *	   Making T bit 0 (may happen during function call using function pointers whose 0th bit is not maintained as 1) would result in a fault.
+ *	4) Trying to return to thread mode when an exception/interrupt is still active.
+ *	5) Unaligned memory access with multiple load or multiple store instructions.
+ *	6) Attempt to divide by zero (if enabled, by default divide by zero results in zero)
+ *	7) For all unaligned data access from memory (only if enabled, otherwise Cortex M supports unaligned data access)
+ *
+ *	Exercise:
+ *	Write a program to enable all configurable fault exceptions, implement the fault exception handlers and cause the fault by following method:
+ *	1) Execute an undefined instruction
+ *	2) Divide by zero
+ *	3) Try executing instruction from peripheral region
+ *	4) Execute SVC inside the SVC handler
+ *	5) Executing SVC instruction inside the interrupt handler whose priority is the same or lesser than SVC handler.
+ *
+ *		__Fault Status and Address Information__
+ *	When a fault happens, inside the fault handler, you can check a couple of fault status and address information registers to get more details about
+ *  the fault and the instruction address at which the fault happened. This will be helpful for debugging.
+ *
+ *	Handler		Status Reg Name		Address Reg Name	Register Description
+ *	--------------------------------------------------------------------------
+ *	HardFault		HFSR				-				Page 4-30
+ *	Mem Manage		MMFSR				MMFAR			Page 4-25 and 4-30
+ *	BusFault		BFSR				BFAR			Page 4-26 and 4-31
+ *	UsageFault		UFSR				-				Page 4-28
+ *
+ *		__Analyzing Stack Frame__
+ *	Thread mode instruction causes exception to trigger which transitions state from Thread Mode to Handler Mode (Exception Handler is entered: Usage 
+ *  Fault Handler in this case).
+ *	When exception is triggered, stacking of thread mode context begins. The stack frame will be stored (pushed) in the stack (Descending stack in this 
+ *  case). The stack frame includes:
+ *
+ *	SP(MSP) (Top of Stack after exception triggers)                                    SP(MSP) (Top of Stack before exception)
+ *   V	---------------------------------------[Stack Frame]-------------------------------------		      V
+ *	    [R0(SP-32), R1(SP-28), R2(SP-24), R3(SP-20), R12(SP-16), LR(SP-12), PC(SP-8), XPSR(SP-4)] (Previous Stack Content)
+ *
+ *
+ *			(Assembly Functions)
+ *		__attribute__((naked)) functions
+ *
+ * . This attribute tells the compiler that the function is an embedded assembly function. You can write the body of the function entirely in assembly 
+ *   code using __asm statements.
+ * . The compiler does not generate prologue and epilogue sequences for functions with __attribute__((naked))
+ * . Use naked functions only to write some assembly instructions(__asm statements).  Mixing 'C' code might not work properly.
+ *
+ *
+ *		__Error reporting when fault happens__
+ *	. Implement the handler which takes some remedial actions
+ *	. Implement a user call back to report errors
+ *	. Reset the microcontroller/processor
+ *	. For an OS environment, the task that triggered the fault can be terminated and restarted
+ *	. Report the fault status register and fault address register values
+ *	. Report additional information of stack frame through debug interface such as printf
+ *
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+
+void UsageFaultHandler_c(uint32_t *pMSP);
+
+int main(void)
+{
+	//1. Enable all configurable exceptions like usage fault, mem manage fault, and bus fault
+		//search system control block in cortex m4 user guide
+		//look for system handler control and state register (SHCRS **typo in manual)
+	uint32_t *pSHCSR = (uint32_t*)0xE000ED24;
+
+	*pSHCSR |= (1 << 16); //mem manage
+	*pSHCSR |= (1 << 17); //bus fault
+	*pSHCSR |= (1 << 18); //usage fault
+
+
+
+	//3. lets force the processor to execute some undefined instructions
+	uint32_t *pSRAM = (uint32_t*)0x20010000; //random memory location of SRAM
+	*pSRAM = 0xFFFFFFFF; 		 //invalid OPCODE
+
+	void (*some_address) (void); //function pointer variable
+
+	//some_address = (void*)pSRAM; 						 //initialize function pointer to address (actually incorrect to do this)
+	some_address = (void*) 0x20010001;  				 //address of a function should ALWAYS be odd (t-bit needs to be 1 to keep it in THUMB state 
+														 //and not ARM state).
+	//some_address = (void*)( (uint32_t)pSRAM) + 1 );    //or you can typecast and add 1 to the address
+	some_address(); 			 //dereference function pointer (how to jump to location in memory) or make PC loaded with that address
+
+	//4. analyze the faults
+
+	for(;;);
+}
+
+
+//2. implement the fault handlers
+void HardFault_Handler(void)
+{
+	printf("Exception : HardFault\n");
+	while(1);
+}
+
+void MemManage_Handler(void)
+{
+	printf("Exception : MemManage\n");
+	while(1);
+}
+
+void BusFault_Handler(void)
+{
+	printf("Exception : BusFault\n");
+	while(1);
+}
+
+//caller
+__attribute__((naked)) void UsageFault_Handler(void){
+	//here we extracted the value of MSP which happens to be the base address
+	//of the stack frame which got saved during the exception entry from thread mode to handler mode.
+	__asm ("MRS r0, MSP");
+	__asm ("B UsageFault_Handler_c"); //branch to c function
+}
+
+//callee (value of r0 from caller becomes argument 1 in callee function)
+void UsageFault_Handler_c(uint32_t *pBaseStackFrame)
+{
+	// moved these instructions to the naked function above (diff way to do it)
+	//__asm ("MRS r0, MSP");
+	//register uint32_t msp_value __asm("r0");
+	//uint32_t *pMSP = (uint32_t*)msp_value;
+
+	uint32_t *pUFSR = (uint32_t*)0xE000ED2A;
+	printf("Exception : UsageFault\n");
+	printf("UFSR = %lx\n", (*pUFSR) & 0xFFFF); //read first 16 bits of UFSR register
+	//printf("MSP = %p\n", pMSP); //read MSP register
+
+	//print contents of stack frame
+	printf("pBaseStackFrame = %p\n", pBaseStackFrame); //read Base of Stack Frame
+	printf("Value of R0 = %lx\n", pBaseStackFrame[0]); //read R0 register
+	printf("Value of R1 = %lx\n", pBaseStackFrame[1]); //read R1 register
+	printf("Value of R2 = %lx\n", pBaseStackFrame[2]); //read R2 register
+	printf("Value of R3 = %lx\n", pBaseStackFrame[3]); //read R3 register
+	printf("Value of R12 = %lx\n", pBaseStackFrame[4]); //read R12 register
+	printf("Value of LR = %lx\n", pBaseStackFrame[5]); //read LR register
+	printf("Value of PC = %lx\n", pBaseStackFrame[6]); //read PC register
+	printf("Value of XPSR = %lx\n", pBaseStackFrame[7]); //read XPSR register
+	while(1);
+}
+
+----------------------------------------------------------------------------
+Section13_FaultHandling_and_Analysis2
+----------------------------------------------------------------------------
+void UsageFaultHandler_c(uint32_t *pMSP);
+
+int fun_divide(int x, int y)
+{
+	return x/y;
+}
+
+
+//next part of exercise (divide by zero)
+
+int main(void)
+{
+	//1. Enable all configurable exceptions like usage fault, mem manage fault, and bus fault
+		//search system control block in cortex m4 user guide
+		//look for system handler control and state register (SHCRS **typo in manual)
+	uint32_t *pSHCSR = (uint32_t*)0xE000ED24;
+
+	*pSHCSR |= (1 << 16); //mem manage
+	*pSHCSR |= (1 << 17); //bus fault
+	*pSHCSR |= (1 << 18); //usage fault (if disabled, divide by zero treated as HardFault)
+
+	//2. enable divide by zero trap (go to CCR - configuration and control register 4-19)
+	//	 4th bit of CCR register is divide by zero trap
+	uint32_t *pCCR = (uint32_t*)0xE000ED14;
+	*pCCR |= (1 << 4);
+
+	//3. Attempt to divide by zero
+	fun_divide(10,0);
+
+	for(;;);
+}
+
+
+//implement the fault handlers
+void HardFault_Handler(void)
+{
+	printf("Exception : HardFault\n");
+	while(1);
+}
+
+void MemManage_Handler(void)
+{
+	printf("Exception : MemManage\n");
+	while(1);
+}
+
+void BusFault_Handler(void)
+{
+	printf("Exception : BusFault\n");
+	while(1);
+}
+
+//caller
+__attribute__((naked)) void UsageFault_Handler(void){
+	//here we extracted the value of MSP which happens to be the base address
+	//of the stack frame which got saved during the exception entry from thread mode to handler mode.
+	__asm ("MRS r0, MSP");
+	__asm ("B UsageFault_Handler_c"); //branch to c function
+}
+
+//callee (value of r0 from caller becomes argument 1 in callee function)
+void UsageFault_Handler_c(uint32_t *pBaseStackFrame)
+{
+	// moved these instructions to the naked function above (diff way to do it)
+	//__asm ("MRS r0, MSP");
+	//register uint32_t msp_value __asm("r0");
+	//uint32_t *pMSP = (uint32_t*)msp_value;
+
+	uint32_t *pUFSR = (uint32_t*)0xE000ED2A;
+	printf("Exception : UsageFault\n");
+	printf("UFSR = %lx\n", (*pUFSR) & 0xFFFF); //read first 16 bits of UFSR register
+	//printf("MSP = %p\n", pMSP); //read MSP register
+
+	//print contents of stack frame
+	printf("pBaseStackFrame = %p\n", pBaseStackFrame); //read Base of Stack Frame
+	printf("Value of R0 = %lx\n", pBaseStackFrame[0]); //read R0 register
+	printf("Value of R1 = %lx\n", pBaseStackFrame[1]); //read R1 register
+	printf("Value of R2 = %lx\n", pBaseStackFrame[2]); //read R2 register
+	printf("Value of R3 = %lx\n", pBaseStackFrame[3]); //read R3 register
+	printf("Value of R12 = %lx\n", pBaseStackFrame[4]); //read R12 register
+	printf("Value of LR = %lx\n", pBaseStackFrame[5]); //read LR register
+	printf("Value of PC = %lx\n", pBaseStackFrame[6]); //read PC register
+	printf("Value of XPSR = %lx\n", pBaseStackFrame[7]); //read XPSR register
+	while(1);
+}
+
+----------------------------------------------------------------------------
+Section14_Exception_for_System_Level_Services_SVC
+----------------------------------------------------------------------------
+/*
+ *		__Exceptions for system-level services__
+ *	. ARM cortex MX processor supports 2 important system-level service exceptions.
+ *		. SVC (SuperVisor Call) and PendSV (Pendable SerVice)
+ *	. Supervisory calls are typically used to request privileged operations or access to system resources from an operating system.
+ *	. SVC exception is mainly used in an OS environment. For example, A less privileged user task can trigger SVC exception
+ *	  to get system-level services (like accessing device drivers, peripherals) from the kernel of the OS.
+ *	. PendSV is mainly used in an OS environment to carry out context switching between 2 or more tasks when no other exceptions
+ *	  are active in the system.
+ *
+ *		__SVC (Supervisor Call) instruction__
+ *	. SVC is a thumb ISA instruction which causes SVC exception
+ *	. In an RTOS scenario, user tasks can execute SVC instruction with an associated argument to make supervisory calls to seek privileged resources 
+ *    from the kernel code.
+ *	. Unprivileged user tasks use the SVC instruction to change the processor mode to privileged mode to access privileged resources like peripherals.
+ *	. SVC instruction is always used along with a number, which can be used to identify the request type by the kernel code.
+ *	. The SVC handler executes right after the SVC instruction (no delay. Unless a higher priority exception arrives at the same time).
+ *
+ *	Scenario:
+ *
+ *	1) User level code. User task SVC #1. Access level: unprivileged. Processor mode: Thread.
+ *	2) Kernel level code. __SVC_request_handler(int svc_number) {}. Access level: privileged. Processor mode: Handler.
+ *	3) (from SVC_request_handler) Privileged resource (display). Peripheral registers access is protected by MPU (memory protection unit) (privileged 
+ *     access only)
+ *		a.) Memory Manage Fault Exception would be triggered if the User Task tries to change / write registers of protected peripheral directly.
+ *
+ *		__Methods to trigger SVC exception__
+ *	There are two ways:
+ *	1) Direct execution of SVC instruction with an immediate value. Example: 'SVC #0x04' in assembly (Using SVC instruction is very efficient in terms 
+ *     of latency)
+ *	2) Setting the exception pending bit in "System Handler Control and State Register" (uncommon method)
+ *
+ *		__How to extract the SVC number__
+ *	. The SVC instruction has a number embedded within it, often referred to as the SVC number.
+ *	. In the SVC handler, you should fetch the opcode of the SVC instruction and then extract the SVC number.
+ *	. To fetch the opcode of the SVC instruction from program memory, we should have the value of PC (return address) where the user code had interrupted
+ *    while triggering
+ *	  the SVC exception.
+ *	. The value of the PC (return address) where the user code had interrupted is stored in the stack as a part of exception entry sequence by the 
+ *    processor.
+ *
+ *	Basically, when SVC triggers from Task A, processor moves from Thread mode (MSP) to Handler mode (MSP) and the stacking process occurs. When in the 
+ *  SVC handler, you want to extract the SVC number from the stack frame.
+ *		To do this:
+ *		Next_ins_addr_after_svc = MSP[6]. PC is located by adding '6' to the location of MSP.
+ *		SVC_number = *( (Next_ins_addr_after_svc) - 2)  //This gives the address, where SVC instruction is stored in code memory. You subtract two 
+ *      because it is pointing to the next location.
+ *
+ *
+ *	Exercise:
+ *	Write a program to execute an SVC instruction from thread mode, implement the SVC handler to print the SVC number used. Also, increment the SVC 
+ *  number by 4 and return it to the thread mode
+ *	code and print it.
+ *	Hints:
+ *	1) Write a main() function where you should execute the SVC instruction with an argument. Lets say SVC #0x5
+ *	2) Implement the SVC handler
+ *	3) In the SVC handler extract the SVC number and print it using printf
+ *	4) Increment the SVC number by 4 and return it to the thread mode.
+ *
+ *
+ *	We are using stack frame to pass the message (svc number) when going between handler mode and thread mode. the return value comes from r0, which 
+ *  we populated with the value we wanted.
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+
+void SVC_Handler_c(uint32_t*);
+
+//Exercise SVC Number
+//Thread Mode code
+int main(void)
+{
+	__asm volatile ("SVC #0x08");
+
+	//register uint32_t data __asm("r0"); //if you do this, the variable data will not be created in stack but rather in a register (not recommended tho)
+
+	uint32_t data;
+
+	__asm volatile ("MOV %0, R0" : "=r"(data) ::);
+
+	printf("data = %ld\n", data);
+
+	for(;;);
+}
+
+__attribute__((naked)) void SVC_Handler(void)
+{
+	//1. Get the value of the MSP
+	__asm("MRS R0, MSP"); //get MSP value without prologue/epilogue instructions modifying it
+	__asm("B SVC_Handler_c"); //branch to c function
+}
+
+//Handler Mode code
+void SVC_Handler_c(uint32_t *pBaseOfStackFrame)
+{
+	printf("in SVC handler\n");
+
+	//__asm("MRS R0, MSP"); //executing this while in a c function can give a corrupted MSP value because of prologue/epilogue instructions included 
+	//with a C function. (use naked func)
+	uint8_t *pReturn_addr = (uint8_t*)pBaseOfStackFrame[6];
+
+	//2. decrement the return address by 2 to point to opcode of the SVC instruction in the program memory
+	pReturn_addr -= 2;
+
+	//3. Extract the SVC number
+	uint8_t svc_number = *pReturn_addr;
+	printf("SVC number is : %d\n", svc_number);
+
+	//4. Increment the SVC number by 4 and return it to thread mode
+	svc_number += 4;
+}
+
+----------------------------------------------------------------------------
+Section14_Exception_for_System_Level_Services_SVC2
+----------------------------------------------------------------------------
+/*
+ * Write a program to add, subtract, multiply, and divide 2 operands using SVC handler and return the resuilt to the thread mode code
+ * and print the result. Thread mode code should pass 2 operands via the stack frame.
+ * Use SVC number to decide the operation:
+ *
+ * Service Number			Operation
+ * ---------------------------------------
+ * 36						Addition
+ * 37						Subtraction
+ * 38						Multiplication
+ * 39						Division
+ *
+ * 		__PendSV Exception__
+ * 	. It is an exception type 14 and has a programmable priority level.
+ * 	. This exception is triggered by setting its pending status by writing to the "Interrupt Control and State Register" of processor.
+ * 	. Triggering a PendSV system exception is a way of invoking the preemptive kernel to carry out the context switch in an OS environment.
+ * 	. In an OS environment, PendSV handler is set to the lowest priority level, and the PendSV handler carries out the context switch operation.
+ *
+ * 		__Typical Use of PendSV__
+ * 	. Typically this exception is triggered inside a higher priority exception handler, and it gets executed when the higher priority handler finishes.
+ * 	. Using this characteristic, we can schedule the PendSV exception handler to be executed after all the other interrupt processing tasks are done.
+ * 	. This is very useful for a context switching operation, which is a crucial operation in various OS design.
+ * 	. Using PendSV in context switching will be more efficient in an interrupt noisy environment.
+ * 	. In an interrupt noisy environment, we need to delay the context switching until all IRQ are executed.
+ *
+ * 		__Context Switching__
+ * 	  It means saving the context of an old task and retrieving the context of the next task which needs to be scheduled on the processor.
+ * 	  Task A -> Task B -> Task A    each have a time slot and are "context switched" based on the scheduler every SysTick Timer Exception.
+ *
+ *		__Scenario of PendSV in context switching__
+ *	1) Task A running in Thread Mode and a SysTick Timeout happens.
+ *	2) Scheduler runs which is also called a SysTick Handler. The Scheduler pends the PendSV (doesn't carry out context switch).
+ *	3) When SysTick Handler exits, and there are no interrupts in the system, then PendSV handler runs (lowest possible priority).
+ *	   Context Switch happens in PendSV handler. Context of Task A will be saved in the stack, and the context of the next task will
+ *	   be retrieved from the stack. The PendSV handler also makes the next task run on the CPU.
+ *	4) Task B executes.
+ *	5) Interrupt occurs during Task B -> ISR executes. ISR executes in Handler mode so it will always preempt Thread mode code.
+ *	6) During ISR execution, suddenly a SysTick Timeout happens. (SysTick will preempt the ISR only if its priority is higher than
+ *	   the currently active ISR. Let's assume SysTick interrupt is highest priority). This process is called interrupt nesting.
+ *	7) Once again, scheduler runs and the scheduler pends the PendSV and exits.
+ *	8) After the scheduler exits, the ISR continues where it left off. ISR finishes and exits. (You can consider this an interrupt noisy environment)
+ *	9) After the ISR exits, the PendSV handler will be invoked and it will carry out the context switch.
+ *	10) Task A returns.
+ *
+ *	Typically you wouldn't do context switching in the SysTick handler, you would just pend the PendSV. You do context switching in the PendSV handler.
+ *
+ *	An unfinished ISR returning to thread mode, keeping unfinished handler code (ISR) will cause a Usage Fault. This could happen if you do context 
+ *  switching
+ *	from the SysTick handler (Scheduler) and it attempts to transition to thread mode after preempting an ISR.
+ *
+ *	Correct way:  Task -> SysTick Handler (Scheduler) *pend PendSV* -> PendSV Handler *context switch* -> Task
+ *		or 		  Task -> ISR -> SysTick Handler (Scheduler) *pend PendSV* -> ISR -> PendSV Handler *context switch* -> Task
+ *
+ *  Priority Scheme (low to high): Task (Thread mode), PendSV handler (Handler mode), ISR (Handler mode), SysTick Handler (assume highest) (Handler mode)
+ *
+ *  		__PendSV other use cases__
+ *  . Offloading Interrupt processing
+ *  . If a higher priority handler is doing time-consuming work, then the other lower priority interrupts will suffer, and systems responsiveness may 
+ *    reduce.
+ *    This can be solved using a combination of ISR and PendSV handler.
+ *
+ *    		__Offloading Interrupt Processing Using PendSV__
+ *  Interrupts may be serviced in 2 halves.
+ *  1) The first half is the time critical part that needs to be executed as a part of ISR.
+ *  2) The second half is called 'bottom half', is basically delayed execution where rest of the time-consuming work will be done.
+ *
+ *  So, PendSV can be used in these cases, to handle the second half execution by triggering it in the first half.
+ *
+ *  		__Scenario of using PendSV in offloading interrupt processing__
+ *  1) Task A running
+ *  2) Interrupt triggers (IRQ #0) and ISR of IRQ #0 (ISR 0) is entered which is supposed to do time-consuming work which could delay
+ *     other lower priority interrupts (bad). Instead, it does the first half of processing (time critical portion). It then pends the
+ *     PendSV and exits.
+ *  3) When there are no other active interrupts, or active ISR's executing in the system, the PendSV handler will run. The PendSV handler
+ *     can carry out the non-time critical (time consuming) bottom half of processing. This makes the ISR very short.
+ *  4) If another interrupt occurs (IRQ #1) during the bottom half of processing, it can preempt this PendSV handler. PendSV is always configured for
+ *     the lowest priority.
+ *  5) ISR 1 will now run (no longer delayed by the time consuming bottom-half processing of ISR 0).
+ *  6) When ISR 1 finishes, PendSV (PendSV Handler) resumes bottom half processing.
+ *  7) When PendSV finishes, it can return to the Thread mode code of Task A.
+ *
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+
+void SVC_Handler_c(uint32_t*);
+
+int32_t add_numbers(int32_t x, int32_t y)
+{
+	int32_t res;
+	__asm volatile("SVC #0x36");
+	__asm volatile("MOV %0, R0": "=r"(res) ::);
+	return res;
+}
+
+int32_t sub_numbers(int32_t x, int32_t y)
+{
+	int32_t res;
+	__asm volatile("SVC #0x37");
+	__asm volatile("MOV %0, R0": "=r"(res) ::);
+	return res;
+}
+
+int32_t mul_numbers(int32_t x, int32_t y)
+{
+	int32_t res;
+	__asm volatile("SVC #0x38");
+	__asm volatile("MOV %0, R0": "=r"(res) ::);
+	return res;
+}
+
+int32_t div_numbers(int32_t x, int32_t y)
+{
+	int32_t res;
+	__asm volatile("SVC #0x39");
+	__asm volatile("MOV %0, R0": "=r"(res) ::);
+	return res;
+}
+
+int main(void)
+{
+	int32_t res;
+
+	res = add_numbers(40,-90);
+	printf("Add result = %ld\n", res);
+
+	res = sub_numbers(25,150);
+	printf("Subtraction result = %ld\n", res);
+
+	res = mul_numbers(374,890);
+	printf("Multiply result = %ld\n", res);
+
+	res = div_numbers(67,-3);
+	printf("Division result = %ld\n", res);
+
+	for(;;);
+}
+
+__attribute__((naked)) void SVC_Handler(void)
+{
+	//1. Get the value of the MSP
+	__asm("MRS R0, MSP"); //get MSP value without prologue/epilogue instructions modifying it
+	__asm("B SVC_Handler_c"); //branch to c function
+}
+
+//Handler Mode code
+void SVC_Handler_c(uint32_t *pBaseOfStackFrame)
+{
+	printf("in SVC handler\n");
+
+	int32_t arg0, arg1, res;
+
+	//__asm("MRS R0, MSP"); //executing this while in a c function can give a corrupted MSP value because of prologue/epilogue instructions 
+	//included with a C function. (use naked func)
+	uint8_t *pReturn_addr = (uint8_t*)pBaseOfStackFrame[6];
+
+	//2. decrement the return address by 2 to point to opcode of the SVC instruction in the program memory
+	pReturn_addr -= 2;
+
+	//3. Extract the SVC number
+	uint8_t svc_number = *pReturn_addr;
+	printf("SVC number is : %d\n", svc_number);
+
+	//4. Increment the SVC number by 4 and return it to thread mode
+	svc_number += 4;
+
+	arg0 = pBaseOfStackFrame[0];
+	arg1 = pBaseOfStackFrame[1];
+
+	switch(svc_number)
+	{
+		case 36:
+			res = arg0 + arg1;
+			break;
+		case 37:
+			res = arg0 - arg1;
+			break;
+		case 38:
+			res = arg0 * arg1;
+			break;
+		case 39:
+			res = arg0 / arg1;
+			break;
+		default:
+			printf("Invalid SVC code");
+	}
+
+	pBaseOfStackFrame[0] = res;
+}
+----------------------------------------------------------------------------
+Section15_Implementation_of_Task_Scheduler
+----------------------------------------------------------------------------
+/////////////////////////////////led.c
+
+void delay(uint32_t count)
+{
+  for(uint32_t i = 0 ; i < count ; i++);
+}
+
+// RED1 = PB5, GREEN = PB10, RED2 = PB9 , YELLOW = PB8
+void led_init_all(void)
+{
+	uint32_t *pRccAhb1enr = (uint32_t*)0x40023830;
+	uint32_t *pGpiobModeReg = (uint32_t*)0x40020400;
+
+	/* 											  -- AHB1PERIPH_BASE --
+	 *  GPIOB_BASE = AHB1PERIPH_BASE + 0x0400 = (PERIPH_BASE + 0x0002_0000) + 0x0400 = 0x4000_0000 + 0x0002_0000 + 0x0000_0400 = 0x4002_0400
+	 *
+	 *	MODER   0x00
+	 *	OTYPER	0x04
+	 *	OSPEEDR	0x08
+	 *	PUPDR	0x0C
+	 *	IDR		0x10
+	 *	ODR		0x14
+	 *	BSRR	0x18
+	 *	LCKR	0x1C
+	 *	AFR[2]	0x20-0x24
+	 *
+	 */
+
+	*pRccAhb1enr |= ( 1 << 1); //GPIOB enable
+
+	*pGpiobModeReg |= ( 1 << (2 * LED_RED1));
+	*pGpiobModeReg |= ( 1 << (2 * LED_GREEN));
+	*pGpiobModeReg |= ( 1 << (2 * LED_RED2));
+	*pGpiobModeReg |= ( 1 << (2 * LED_YELLOW));
+
+#if 0
+	//configure the outputtype
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_RED1));
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_GREEN));
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_RED2));
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_YELLOW));
+#endif
+
+    led_off(LED_RED1);
+    led_off(LED_GREEN);
+    led_off(LED_RED2);
+    led_off(LED_YELLOW);
+
+
+
+}
+
+void led_on(uint8_t led_no)
+{
+  uint32_t *pGpiobDataReg = (uint32_t*)0x40020414;
+  *pGpiobDataReg |= ( 1 << led_no);
+
+}
+
+void led_off(uint8_t led_no)
+{
+	  uint32_t *pGpiobDataReg = (uint32_t*)0x40020414;
+	  *pGpiobDataReg &= ~( 1 << led_no);
+
+}
+
+
+/////////////////////////////main.c
+/*
+ * 		__Implementing a Scheduler__
+ * 	. Let's implement a scheduler which schedules multiple user tasks in a round-robin fashion by carrying out context switch operation.
+ * 	. Round robin scheduling method is, time slices are assigned to each task in equal portions and in circular order.
+ * 	. First will use systick handler to carry out the context switch operation between multiple tasks.
+ * 	. Later we will change the code using pendSV handler.
+ *
+ *		__What is a task?__
+ *	. A task is a piece of code, or a 'c' function, which does a specific job when it is allowed to run on the CPU.
+ *	. A task has its own stack to create its local variables when it runs on the CPU. Also when the scheduler decides to remove
+ *	  a task from the CPU, the scheduler first saves the context (state) of the task in task's private stack.
+ *	. To summarize, a piece of code or a function is called a task when it is schedulable and never loses its 'state' unless it
+ *	  is deleted permanently.
+ *
+ *	PSP (Thread Mode)			MSP (Handler Mode)
+ *	T1 -> Stack-T1			Scheduler (Systick handler / PendSV handler)
+ *	T2 -> Stack-T2
+ *	T3 -> Stack-T3
+ *	T4 -> Stack-T4
+ *
+ *									__Stack assessment__ (Full Descending)
+ *	RAM_START																				              RAM_END
+ *	<------------------------------------128KB of RAM (SRAM1+SRAM2)--------------------------------------------->
+ *								| Private Stack | Private Stack | Private Stack | Private Stack | Private Stack |
+ *								|   Scheduler   |	   T4	    |      T3	    |      T2	    |      T1       |
+ *								|<-----1kB----->|<-----1kB----->|<-----1kB----->|<-----1kB----->|<-----1kB----->|
+ *								|<-------------------------------------5kB------------------------------------->|
+ *																			   /                /\               \
+ *																	T2_STACK_END   T2_STACK_START T1_STACK_END	T1_STACK_START
+ *																						 SP <---Stack Consumption
+ *
+ *			__Scheduling policy selection__
+ *	. We will be using round robin preemptive scheduling
+ *	. No task priority
+ *	. We will use SysTick timer to generate exception for every 1ms to run the scheduler code
+ *
+ *			__What is scheduling__
+ *	. Scheduling is an algorithm which takes the decision of preempting a running task from the CPU and takes the decision about which task
+ *	  should run on the CPU next.
+ *	. The decision could be based on many factors such as system load, the priority of tasks, shared resource access, or a simple round-robin method.
+ *
+ *			__What is context switching?__
+ *	. Context switching is the procedure of switching out of the currently running task from the processor after saving the task's execution context
+ *	  or state and switching in the next task's to run on the CPU by retrieving the past execution context or state of the task.
+ *
+ *			__What is execution context or state of a task?__
+ *	. Inside a microcontroller, there is a processor or CPU (ARM cortex m3/m4).
+ *	. Inside the processor, there is/are processor core(s). A processor core is a collection of various units (general purpose registers, ALU 
+ *    (Arithmetic Logic Unit), Status registers, and special registers).
+ *	. A processor also has its own peripherals such as NVIC (controls interrupts and exceptions from various parts of the microcontroller).
+ *	  It also has Memory Protection Unit (MPU), System Control Block (SCB), Floating Point Unit (FPU), Debug Unit.
+ *	. When a task is running on the processor, it makes use of general purpose registers, ALU, status registers and special registers. The collection of
+ *	  general purpose registers + some special register + status registers is known as the 'state of a task'.
+ *	. When the scheduler wants to switch out a task, then it should save its intermediate results of the operation which are already stored in the general
+ *	  purpose registers and it should also store the status register value and some special register values into the private stack of the task.
+ *	. Only after that can a scheduler switch out a task.
+ *
+ *
+ *  		(**)Important registers to include with 'state of a task'
+ *
+ *	**General purpose registers: R0-R7 (Low registers) & R8-R12 (High registers)
+ *
+ *	**SP(R13): Stack pointers: PSP and MSP (banked versions of SP).
+ *			   Another important thing, is the current value or current state of task private stack which is stored in PSP which we are using for the 
+ *             stack pointers of the user tasks.
+ *	**LR(R14): LR is also very important. Because it reveals some of the important information about the task handler, its stack pointer selection and 
+ *             other things.
+ *	**PC(R15): PC is very important. Why? Because, when the scheduler was preempting or switching out a task, the PC will be holding the address of the 
+ *             next instruction
+ *	           of that task handler. When the scheduler wants to switch in that task some time later, it should know where it should return.
+ *	           Scheduler also preserves the value of PC.
+ *
+ *	Special registers: **PSR (Program Status Register) gives the snapshot of the current state like whether zero flag, negative flag or other flags are 
+ *                       set or not.
+ *	                   PRIMASK, FAULTMASK, BASEPRI (Exception Mask Registers)  \  [Privileged registers]  Not important
+ *	                   CONTROL (CONTROL register)                              /  [Privileged registers]  Not important
+ *
+ *	User task is usually running with unprivileged access, so the privileged registers aren't important to save/keep track of in the 'state of a task'.
+ *	The kernel or the scheduler is what alters these registers.
+ *
+ *			__Case of T1 switching out, T2 switching in__
+ *
+ *	1) Running T1
+ *	2) Save the context of T1 to T1's private stack      	(PUSH)  	[Context Saving]
+ *	3) Save the PSP value of T1								  			[Context Saving]
+ *	4) Get current PSP value of T2							  			[Context Retrieving]
+ *	5) Retrieve the context of T2 from T2's private stack 	(POP)		[Context Retrieving]
+ *	6) Run T2
+ *
+ *			__Stacking and Unstacking during exception__
+ *	1) Task 1 is running in thread mode using PSP.
+ *	2) Exception happens (SysTick Exception lets say)
+ *	3) Thread mode code (user task) is preempted, stacking occurs, then handler mode code runs (SysTick exception handler using MSP)
+ *		a) The processor saves a stack frame when the exception happens, which is the context or state of task 1 in the stack.
+ *		b) Starting at the highest memory address (Full Descending stack), the stack frame is pushed with xPSR at the highest memory address and R0 at 
+ *         the lowest. PSP is now pointing at the location of R0.
+ *  4) After the exception handler exits, unstacking begins (stack frame is retrieved/popped back) before returning to Task 1 (thread mode code using PSP).
+ *  	a. PSP is now pointing to the location of the last stacked item, which is right before where xPSR used to be.
+ *  5) We actually don't want it to return to Task 1. We want the scheduler to take it to Task 2.
+ *  6) In the exception handler, you should change the PSP value (the previous PSP value belongs to Task 1's private stack). We want to change this to 
+ *     point to Task 2's private stack.
+ *  7) We want to give the address to Task 2's Handler to PC (return address) which is also R15. Now when we exit the exception, the processor will 
+ *     automatically jump to Task 2's handler instead of Task 1.
+ *
+ *		Stack Frame only includes: R0, R1, R2, R3, R12, LR, PC, xPSR
+ *		State of Task includes: R0 - R12, PSP (R13), LR (R14), PC (R15), PSR
+ *
+ *		So the processor already partially saves the state of the task, but it is missing some registers that should also be included.
+ *		In the exception handler, the remaining registers (R4 - R11) and PSP (R13-SP) need to also be saved.
+ *
+ *	Exercise:
+ *	Configure the systick timer to produce exception every 1ms
+ *
+ *	SysTick count value calculation:
+ *		. Processor Clock = 16MHz
+ *		. SysTick timer count clock = 16MHz
+ *		. 1ms is 1kHz in frequency domain
+ *		. So, to bring down SysTick timer count clock from 16MHz to 1kHz, use a divisor (reload value)
+ *		. Reload value = 16000
+ *
+ *	For stm32-f4 mcu's, system clock is 16MHz (which is derived from HSI or high speed internal clock)
+ *	The processor clock and count clock (systick timer) derive their signal from the 16MHz system clock (HSI).
+ *
+ *	SysTick timer count clock = 16MHz.
+ *	For 1 count it takes 0.0625us
+ *	0.0625us delay -> 1 count
+ *	1us delay = 16 count
+ *	1ms delay = 16000 count
+ *
+ *	4-32 System timer registers summary
+ *  ---------------------------------------------
+ *	0xE000E010 	SYST_CSR	RW	Privileged	SysTick Control and Status Register
+ *	0xE000E014 	SYST_RVR	RW	Privileged	SysTick Reload Value Register
+ *	0xE000E018 	SYST_CVR	RW	Privileged	SysTick Current Value Register
+ *	0xE000E01C 	SYST_CALIB	RO	Privileged	SysTick Calibration Value Register
+ *
+ *
+ *	Saving Context (PUSH) of T1: SF2
+ *
+ *	Basically when exception happens, the stacking process occurs which saves the stack frame (SF1) which includes (in order of highest to lowest memory)
+ *	xPSR, PC, LR, R12, R3, R2, R1, R0 (SP-PSP was pointing here). We also have to manually push the remaining registers of the "state of a task" after SF1
+ *	(we call this SF2). Then R11,R10,R9,R8,R7,R6,R5,R4 should be pushed after (again in order of highest to lowest memory location -- FD stack). The SP 
+ *  (PSP) is now pointing to R4.
+ *
+ *	Retrieving (POP) Context of T2 : SF2
+ *
+ *	Opposite process. First program the PSP register with the correct value of task 2's current stack pointer. Then you pop SF2. Then you exit exception 
+ *  handler (which unstacks SF1). Execution will resume at task 2.
+ *
+ *	__Task's stack area init and storing of dummy SF__
+ *	. Each task can consume a maximum of 1kB of memory as a private stack.
+ *	. This stack is used to hold tasks local variables and context (SF1 + SF2)
+ *	. When a task is getting scheduled for the very first time, it doesn't have any context. So, the programmer should store the dummy SF1 and SF2 in 
+ *    Task's stack area as part of "task initialization" sequence before launching the scheduler.
+ *
+ *  		__Introducing Blocking State for Tasks__
+ *  . Software based delay (for loop) wastes a ton of CPU cycles and won't produce an accurate delay. Much more efficient to use a timer or blocking 
+ *    mechanism. The goal is to not waste any CPU cycles.
+ *  . When a task has got nothing to do, it should simply call a delay function which should put the task into the blocked state from running state until
+ *    the specified delay is elapsed.
+ *  . We should now maintain 2 states for a task. Running and Blocked.
+ *  . The scheduler should schedule only those tasks which are in Running state.
+ *  . The scheduler also should unblock the blocked tasks if their blocking period is over and put them back to running state.
+ *
+ *			__TCB(Task Control Block) Structure__
+ *	. Refer to TCB_t struct
+ *
+ *			__Block a task for a given number of ticks__
+ *	. Let's introduce a function called "task_delay" which puts the calling task to the blocked state for a given number of ticks
+ *	. E.g., task_delay(1000); if a task calls this function then task_delay function puts the task into blocked state and allows the
+ *	  next task to run on the CPU.
+ *	. Here, the number 1000 denotes a block period in terms of ticks, the task who calls this function is going to block for 1000 ticks
+ *	  (systick exceptions), i.e., for 1000 ms since each tick happens for every 1ms.
+ *	. The scheduler should check elapsed block period of each blocked task and put them back to running state if the block period is over.
+ *
+ *			__Idle Task__
+ *	What if all the tasks are blocked? Who is going to run on the CPU?
+ *	. We will use the idle task to run on the CPU if all the tasks are blocked. The idle task is like user tasks but only runs when all
+ *	  user tasks are blocked, and you can put the CPU to sleep.
+ *	. Idle task should always be in running state.
+ *
+ *			__Global tick count__
+ *	. How does the scheduler decide when to put the blocked state tasks (blocked using task_delay function) back to the running state?
+ *	. It has to compare the task's delay tick count with a global tick count
+ *	. So, scheduler should maintain a global tick count and update it for every systick exception
+ *
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+#include "main.h"
+#include "led.h"
+
+//creating 4 tasks
+void task1_handler(void); //Task 1
+void task2_handler(void); //Task 2
+void task3_handler(void); //Task 3
+void task4_handler(void); //Task 4
+
+void init_systick_timer(uint32_t tick_hz);
+__attribute__((naked)) void init_scheduler_stack(uint32_t sched_top_of_stack);
+void init_tasks_stack(void);
+void enable_processor_faults(void);
+__attribute__((naked)) void switch_sp_to_psp(void);
+void save_psp_value(uint32_t stack_addr);
+void update_global_tick_count(void);
+uint32_t get_psp_value(void);
+
+void task_delay(uint32_t tick_count);
+
+uint8_t current_task = 1; //task1 is running
+
+uint32_t g_tick_count = 0;
+
+const uint32_t const_v_1 = 100;
+const uint32_t const_v_2 = 100;
+const uint8_t const_v_3 = 100;
+
+typedef struct
+{
+	uint32_t psp_value;
+	uint32_t block_count;
+	uint8_t current_state;
+	void (*task_handler)(void);
+}TCB_t;
+
+//v this is shared data/memory area. there could be a chance of race condition between thread mode code and handler mode code.
+TCB_t user_tasks[MAX_TASKS]; //global array accessed by bother user_tasks and the exception handlers
+
+void NMI_Handler(void)
+{
+	//here implement your real logic of handling NMI
+}
+
+int main(void)
+{
+	enable_processor_faults();
+
+	init_scheduler_stack(SCHED_STACK_START);
+
+	init_tasks_stack();
+
+	led_init_all();
+
+	init_systick_timer(TICK_HZ);
+
+	switch_sp_to_psp();
+
+	task1_handler();
+
+	for(;;);
+}
+
+//Tasks never return, they are executing always.
+void idle_task(void)
+{
+	while(1);
+}
+
+
+void task1_handler(void)
+{
+	while(1)
+	{
+		led_on(LED_RED1);
+		task_delay(1000);
+		led_off(LED_RED1);
+		task_delay(1000);
+	}
+}
+
+void task2_handler(void)
+{
+	while(1)
+	{
+		led_on(LED_GREEN);
+		task_delay(500);
+		led_off(LED_GREEN);
+		task_delay(500);
+	}
+}
+
+void task3_handler(void)
+{
+	while(1)
+	{
+		led_on(LED_RED2);
+		task_delay(250);
+		led_off(LED_RED2);
+		task_delay(250);
+	}
+}
+
+void task4_handler(void)
+{
+	while(1)
+	{
+		led_on(LED_YELLOW);
+		task_delay(125);
+		led_off(LED_YELLOW);
+		task_delay(125);
+	}
+}
+
+void init_systick_timer(uint32_t tick_hz)
+{
+	uint32_t *pSRVR = (uint32_t*)0xE000E014;
+	uint32_t *pSCSR = (uint32_t*)0xE000E010;
+
+	//Calculation of reload value
+	uint32_t count_value = ((SYSTICK_TIM_CLK / tick_hz) - 1);
+
+	//Clear the value of SRVR (systick reload value register)
+	*pSRVR &= ~(0x00FFFFFFFF);
+
+	//load the value in to SRVR
+	*pSRVR |= count_value;
+
+	//do some settings
+	*pSCSR |= (1 << 1); //enables SysTick exception request
+	*pSCSR |= (1 << 2); //indicates the clock source (processor clock)
+
+	//enable the systick
+	*pSCSR |= (1 << 0); //enables the counter
+}
+
+//naked function has no prologue/epilogue sequences
+__attribute__((naked)) void init_scheduler_stack(uint32_t sched_top_of_stack)
+{
+	__asm volatile("MSR MSP, %0": : "r" (sched_top_of_stack) : );
+	__asm volatile("BX LR");
+}
+
+//initialize dummy task stacks
+void init_tasks_stack(void)
+{
+	user_tasks[0].current_state = TASK_READY_STATE;
+	user_tasks[1].current_state = TASK_READY_STATE;
+	user_tasks[2].current_state = TASK_READY_STATE;
+	user_tasks[3].current_state = TASK_READY_STATE;
+	user_tasks[4].current_state = TASK_READY_STATE;
+
+	user_tasks[0].psp_value = IDLE_STACK_START;
+	user_tasks[1].psp_value = T1_STACK_START;
+	user_tasks[2].psp_value = T2_STACK_START;
+	user_tasks[3].psp_value = T3_STACK_START;
+	user_tasks[4].psp_value = T4_STACK_START;
+
+	user_tasks[0].task_handler = idle_task;
+	user_tasks[1].task_handler = task1_handler;
+	user_tasks[2].task_handler = task2_handler;
+	user_tasks[3].task_handler = task3_handler;
+	user_tasks[4].task_handler = task4_handler;
+
+	uint32_t *pPSP;
+
+	for(int i = 0; i < MAX_TASKS; i++)
+	{
+		//place PSP starting at T[i]_TASK_START
+		pPSP = (uint32_t*) user_tasks[i].psp_value;
+
+		pPSP--; //xPSR (Start of SF1)
+		*pPSP = DUMMY_XPSR; //0x01000000
+
+		pPSP--; //PC
+		*pPSP = (uint32_t) user_tasks[i].task_handler;
+
+		pPSP--; //LR
+		*pPSP = 0xFFFFFFFD; //return to thread mode, FPU off, with PSP
+
+		//allocate memory and initialize to 0 for R0-R13
+		for(int j = 0; j < 13; j++)
+		{
+			pPSP--;
+			*pPSP = 0;
+		}
+
+		user_tasks[i].psp_value = (uint32_t)pPSP; //preserve value of PSP
+	}
+}
+
+void enable_processor_faults(void)
+{
+	uint32_t *pSHCSR = (uint32_t*)0xE000ED24;
+
+	*pSHCSR |= (1 << 16); //mem manage
+	*pSHCSR |= (1 << 17); //bus fault
+	*pSHCSR |= (1 << 18); //usage fault (if disabled, divide by zero treated as HardFault)
+}
+
+uint32_t get_psp_value(void)
+{
+	return user_tasks[current_task].psp_value;
+}
+
+void save_psp_value(uint32_t current_psp_value)
+{
+	user_tasks[current_task].psp_value = current_psp_value;
+}
+
+void update_next_task(void)
+{
+	int state = TASK_BLOCKED_STATE;
+
+	for(int i = 0; i < (MAX_TASKS); i++)
+	{
+		current_task++;
+		current_task %= MAX_TASKS;
+		state = user_tasks[current_task].current_state;
+		if((state == TASK_READY_STATE) && (current_task != 0)) //idle task is always ready
+			break;
+	}
+
+	if(state != TASK_READY_STATE) //all tasks blocked
+		current_task = 0; //idle task
+}
+
+__attribute__((naked)) void switch_sp_to_psp(void)
+{
+	//1. initialize the PSP with TASK1 stack start address
+	//get the value of psp of current_task (all of this uses MSP as SP)
+	__asm volatile("PUSH {LR}"); //preserve LR which connects back to main() before changing its value when entering get_psp_value() function
+	__asm volatile("BL get_psp_value"); //BL = branch with link, so we can return to this function while storing PSP in R0
+	__asm volatile("MSR PSP, R0"); //initialize PSP
+	__asm volatile("POP {LR}"); //retrieve LR that connects back to main()
+
+	//2. change SP to PSP using CONTROL register
+	__asm volatile("MOV R0, #0x02");   //SPSEL set to PSP
+	__asm volatile("MSR CONTROL, R0");
+	__asm volatile("BX LR"); //return to main()
+}
+
+void schedule(void)
+{
+	//pend the pendsv exception
+	uint32_t *pICSR = (uint32_t*)0xE000ED04;
+	*pICSR |= (1 << 28);
+}
+
+void task_delay(uint32_t tick_count)
+{
+	//disable interrupt (avoid race condition)
+	INTERRUPT_DISABLE();
+
+	if(current_task)
+	{
+		//global variable access shared between thread & handler mode code
+		user_tasks[current_task].block_count = g_tick_count + tick_count;
+		user_tasks[current_task].current_state = TASK_BLOCKED_STATE;
+		schedule();
+	}
+
+	//enable interrupt (avoid race condition)
+	INTERRUPT_ENABLE();
+}
+
+//scheduler to be used for context switching
+__attribute__((naked)) void PendSV_Handler(void)
+{
+	/* Save the context of current task */
+	//1. Get current running task's PSP value
+	__asm volatile("MRS R0, PSP");
+
+	//2. Using that PSP value store SF2(R4 to R11)
+	//cant use PUSH because Handler mode always uses MSP
+	__asm volatile("STMDB R0!, {R4-R11}"); //STMDB (store multiple registers, decrement before -- essentially PUSH operation)
+
+	__asm volatile("PUSH {LR}");
+
+	//3. Save the current value of PSP
+	//R0 already has updated PSP value from previous line, so when BL executes it will be passed into the function save_psp_value()
+	__asm volatile("BL save_psp_value");
+
+
+	/* Retrieve the context of the next task */
+	//1. Decide next task to run
+	__asm volatile("BL update_next_task");
+
+	//2. get its past PSP value
+	__asm volatile("BL get_psp_value");
+
+	//3. Using that PSP value retrieve SF2(R4 to R11)
+	__asm volatile("LDMIA R0!, {R4-R11}"); //LDMIA (load multiple registers and increment after -- essentially POP operation)
+
+	//4. update PSP and exit
+	__asm volatile("MSR PSP, R0");
+
+	__asm volatile("POP {LR}");
+
+	//this step is required for naked functions as the compiler wont put prologue and epilogue sequences.
+	__asm volatile("BX LR");
+}
+
+void update_global_tick_count(void)
+{
+	g_tick_count++;
+}
+
+void unblock_tasks(void)
+{
+	for(int i = 1; i < MAX_TASKS; i++) //no need to check i=0 because idle task is always running
+	{
+		if(user_tasks[i].current_state != TASK_READY_STATE)
+		{
+			if(user_tasks[i].block_count == g_tick_count)
+			{
+				user_tasks[i].current_state = TASK_READY_STATE;
+			}
+		}
+	}
+}
+
+void SysTick_Handler(void)
+{
+	uint32_t *pICSR = (uint32_t*)0xE000ED04;
+
+	update_global_tick_count();
+	unblock_tasks();
+
+	//pend the pendsv exception
+	*pICSR |= (1 << 28);
+
+}
+
+//implement the fault handlers
+void HardFault_Handler(void)
+{
+	printf("Exception : HardFault\n");
+	while(1);
+}
+
+void MemManage_Handler(void)
+{
+	printf("Exception : MemManage\n");
+	while(1);
+}
+
+void BusFault_Handler(void)
+{
+	printf("Exception : BusFault\n");
+	while(1);
+}
+
+/////////////////////////////led.h
+#define LED_RED1 	 5
+#define LED_GREEN 	 10
+#define LED_RED2     9
+#define LED_YELLOW   8
+
+#define DELAY_COUNT_1MS 		 1250U
+#define DELAY_COUNT_1S  		(1000U * DELAY_COUNT_1MS)
+#define DELAY_COUNT_500MS  		(500U  * DELAY_COUNT_1MS)
+#define DELAY_COUNT_250MS 		(250U  * DELAY_COUNT_1MS)
+#define DELAY_COUNT_125MS 		(125U  * DELAY_COUNT_1MS)
+
+void led_init_all(void);
+void led_on(uint8_t led_no);
+void led_off(uint8_t led_no);
+void delay(uint32_t count);
+
+/////////////////////////////main.h
+// Some stack memory calculations
+#define SIZE_TASK_STACK		1024U
+#define SIZE_SCHED_STACK	1024U
+
+#define SRAM_START			0x20000000U
+#define	SIZE_SRAM			((128) * (1024))
+#define SRAM_END			((SRAM_START) + (SIZE_SRAM))
+
+#define T1_STACK_START		SRAM_END
+#define T2_STACK_START		((SRAM_END) - (1 * SIZE_TASK_STACK))
+#define T3_STACK_START		((SRAM_END) - (2 * SIZE_TASK_STACK))
+#define T4_STACK_START		((SRAM_END) - (3 * SIZE_TASK_STACK))
+#define IDLE_STACK_START	((SRAM_END) - (4 * SIZE_TASK_STACK))
+#define SCHED_STACK_START	((SRAM_END) - (5 * SIZE_TASK_STACK))
+
+#define TICK_HZ				1000u
+
+#define HSI_CLK				16000000U
+#define SYSTICK_TIM_CLK		HSI_CLK
+
+#define MAX_TASKS			5
+
+#define DUMMY_XPSR 			0x01000000U
+
+#define TASK_READY_STATE 	0x00
+#define TASK_BLOCKED_STATE	0xFF
+
+//PRIMASK register (priority mask register)
+#define INTERRUPT_DISABLE() do{ __asm volatile ("MOV R0, #0x1"); __asm volatile("MSR PRIMASK, R0"); } while(0)
+#define INTERRUPT_ENABLE() do{ __asm volatile ("MOV R0, #0x0"); __asm volatile("MSR PRIMASK, R0"); } while(0)
+
+----------------------------------------------------------------------------
+Section16_Bare_Metal_Embd_and_Linker_Scripts
+----------------------------------------------------------------------------
+/////////////////////////////main.h
+// Some stack memory calculations
+#define SIZE_TASK_STACK		1024U
+#define SIZE_SCHED_STACK	1024U
+
+#define SRAM_START			0x20000000U
+#define	SIZE_SRAM			((128) * (1024))
+#define SRAM_END			((SRAM_START) + (SIZE_SRAM))
+
+#define T1_STACK_START		SRAM_END
+#define T2_STACK_START		((SRAM_END) - (1 * SIZE_TASK_STACK))
+#define T3_STACK_START		((SRAM_END) - (2 * SIZE_TASK_STACK))
+#define T4_STACK_START		((SRAM_END) - (3 * SIZE_TASK_STACK))
+#define IDLE_STACK_START	((SRAM_END) - (4 * SIZE_TASK_STACK))
+#define SCHED_STACK_START	((SRAM_END) - (5 * SIZE_TASK_STACK))
+
+#define TICK_HZ				1000u
+
+#define HSI_CLK				16000000U
+#define SYSTICK_TIM_CLK		HSI_CLK
+
+#define MAX_TASKS			5
+
+#define DUMMY_XPSR 			0x01000000U
+
+#define TASK_READY_STATE 	0x00
+#define TASK_BLOCKED_STATE	0xFF
+
+//PRIMASK register (priority mask register)
+#define INTERRUPT_DISABLE() do{ __asm volatile ("MOV R0, #0x1"); __asm volatile("MSR PRIMASK, R0"); } while(0)
+#define INTERRUPT_ENABLE() do{ __asm volatile ("MOV R0, #0x0"); __asm volatile("MSR PRIMASK, R0"); } while(0)
+
+/////////////////////////////main.c
+/*
+ *			__Building and running bare metal executables for ARM target using GNU tools__
+ *	. Toolchain installation
+ *	. Understand compiling a 'C' program for an embedded target without using an IDE
+ *	. Writing microcontroller startup file for STM32F4 MCU
+ *	. Writing your own 'C' startup code (code which runs before main() )
+ *	. Understanding different sections of the relocatable object file (.o files)
+ *	. Writing linker script file from scratch and understanding section placements
+ *	. Linking multiple .o files using linker script and generating application executable (.elf, bin, hex)
+ *	. Loading the final executable on the target using OpenOCD and GDB client
+ *
+ *
+ *  ~~~~~~~~~~~~Developing~~~~~~~~~~	 ~~~~~~~~Building~~~~~~	   ~~~~~~~Downloading~~~~~~~	~~~Running~~~
+ *	[User application (.c, .s files)] -> [Compiler] -> [Linker] -> [Programmer and debugger] -> [Flash (MCU)]
+ *
+ *	1st. Using  Sample "C" program from Section 15 (task_scheduler)
+ *	Took main.c, main.h, led.c, led.h and put in a folder called my_workspace
+ *
+ *		__Cross compilation and toolchains__
+ *			(High Level Language)		(Embedded target specific machine codes)
+ *	[User application (.c, .s files)] -------------> [Executable]
+ *
+ *	What is cross compilation?
+ *	. Cross-compilation is a process in which the cross-toolchain runs on the host machine (PC) and creates executables that run on diff machine (ARM)
+ *
+ *	Cross-compilation toolchains
+ *	. Toolchain or a cross-compilation toolchain is a collection of binaries which allows you to compile, assemble, link your applications
+ *	. It also contains binaries to debug the application on the target
+ *	. Toolchain also comes with other binaries which help you to analyze the executables
+ *		. dissect different sections of the executable
+ *		. disassemble
+ *		. extract symbol and size information
+ *		. convert executable to other formates such as bin, ihex
+ *		. provides 'C' standard libraries
+ *
+ *	Popular Toolchains:
+ *	1. GNU Tools (GCC) for ARM Embedded Processors (free and open-source)
+ *	2. armcc from ARM Ltd. (ships with KEIL, code restriction version, requires licensing)
+ *
+ *	We will be using GNU's Compiler Collections (GCC) Toolchain
+ *
+ *	arm-none-eabi-gcc (compiler, linker, assembler)
+ *	arm-none-eabi-objdump, arm-none-eabi-readelf, arm-none-eabi-nm (Elf file analyzer)
+ *	arm-none-eabi-ld (linker)
+ *	arm-none-eabi-as (assembler)
+ *	arm-none-eabi-objcopy (format converter)
+ *
+ *		__Build process__
+ *
+ *	main.c -> [Compiler] -> main.i
+ *		(pre-processing stage of compilation)
+ *		*all pre-processing directives will be resolved
+ *
+ *	main.i -> [Compiler] -> main.s
+ *		(Code generation stage)
+ *		Higher level language code statements will be converted into processor architectural level mnemonics
+ *
+ *							(re-locatable object file)
+ *	main.s -> [Compiler] -> main.o
+ *		(Assembler stage)
+ *		Assembly level mnemonics are converted into opcodes (machine codes for instructions)
+ *
+ *	main.c -> (pre-processing) -> main.i -> (parsing) -> (code generator) -> main.s -> (assembler) -> main.o
+ *
+ *	re-locatable basically means no absolute addresses when the high level 'c' code is translated into assembly level, processor architecture specific 
+ *  machine codes.
+ *
+ *	by default, the processor does not save the .i and .s files but you can tell it to save them if you like.
+ *
+ *
+ *	After all that, Linking Stage:
+ *
+ *	re-locatable object files (.o)
+ *	  |				Executable and debug file
+ *	  |						|
+ *	main.o -> (Linker) -> main.elf -> objcopy tool
+ *				 |							|	 |
+ *			   main.a					.ihex   .bin
+ *  Other libraries (std and/or 3rd party)
+ *
+ *	(.elf stands for executable and linkable format)
+ *
+ *	Complete build process:  Pre-processing -> Compilation -> Linking   (arm-none-eabi-gcc)
+ *
+ *
+ *	__Compiling main.c in command prompt__
+ *
+ *	arm-none-eabi-gcc main.c -o main.o   (this compiles, assembles and links. but we don't want to link, just compile.)
+ *
+ *	so instead:  arm-none-eabi-gcc -c main.c -o main.o  (compile and assemble but dont link).
+ *
+ *	check http://gcc.gnu.org/onlinedocs/gcc/index.html
+ *
+ *	inline assembly codes will fail because we did not specify the processor architecture to the compiler.
+ *
+ *	so instead do: arm-none-eabi-gcc -c -mcpu=cortex-m4 main.c -o main.o
+ *
+ *	but also, we need to specify -mthumb flag so the compiler generates code in Thumb state rather than ARM state. Cortex M processsors only support 
+ *  Thumb State.
+ *
+ *	arm-none-eabi-gcc -c -mcpu=cortex-m4 -mthumb main.c -o main.o
+ *	arm-none-eabi-gcc -S -mcpu=cortex-m4 -mthumb main.c -o main.s (compile but do not assemble)
+ *
+ *	__MakeFile__
+ *
+ *	target:dependency
+ *	main.o:main.c
+ *
+ *	$^ -> denotes dependency  (main.c)
+ *	$@ -> denotes target      (main.o)
+ *	$(var)
+ *
+ * 		__Analyzing .o files (Relocatable object files)__
+ * 	. main.o is in elf format (executable and linkable format)
+ * 	. ELF is a standard file format for object files and executable files when you use GCC
+ * 	. A file format standard describes a way of organizing various elements (data, read-only data, code, uninitialized data, etc.) of a program in 
+ *    different sections.
+ *
+ *	Other file formats:
+ *		. The Common Object File Format (COFF): Introduced by Unix System V
+ *		. ARM Image Format (AIF) : Introduced by ARM
+ *		. SRECORD: Introduced by Motorola
+ *
+ *	__Analyzing object file__
+ *
+ *	arm-none-eabi-objdump.exe
+ *  arm-none-eabi-objdump.exe -h main.o
+ *
+ *	arm-none-eabi-objdump.exe -d main.o > main_log
+ *	arm-none-eabi-objdump.exe -D main.o > main_log
+ *	arm-none-eabi-objdump.exe -s main.o
+ *
+ *	 Source File				Relocatable object file
+ *	  [main.c]  --------------------> [main.o]
+ *	   _ | _	    Compilation			Machine code file. It doesnt contain any absolute addresses for data and code
+ *	 |		 |
+ *	Code	Data
+ *
+ *	Instructions (codes) are stored in FLASH memory of the MCU.
+ *	Data (variables) are stored in the main memory (RAM)
+ *	Why is data stored in RAM but not in FLASH>
+ *	Because, data is nothing but variables and they may change at anytime during runtime of the program.
+ *	So, it makes sense to store read only data in flash but not variable data.
+ *
+ *	Flash 	R   memory
+ *	RAM 	R/W memory
+ *
+ *
+ *
+ *		contains initialized data									This section contains code (instructions)
+ *	RAM		  [.data] <------------------------------------------------------------>[.text] 					  ROM
+ *	  												|
+ *		contains read only data	____________________|_____________	contains data/code which programmer demands to put in user defined sections
+ *	ROM		[.rodata] <------------[main.o (object file in ELF format)]------------>[user defined sections]       RAM or ROM
+ *													|
+ *		contains data which are uninitialized		|				some special sections added by the compiler. contains some special data
+ *	RAM 	   [.bss] <------------------------------------------------------------>[some special sections]       ROM
+ *								Different sections of the program in an ELF format
+ *
+ *				__Linker and Locator__
+ *
+ *	[main.c]  --------------->  [main.o] {.text, .data, .bss, .rodata}
+ *	 [led.c]  --------------->  [main.o] {.text, .data, .bss, .rodata}
+ *
+ *	Linker and Locator:
+ *		. Use the linker to merge similar sections of different object files and to resolve all undefined symbols of different object files.
+ *		. Locator (part of linker) takes the help of a linker script to understand how you wish to merge different sections and assigns mentioned
+ *		  addresses to different sections.
+ *
+ *																Merging and address relocation
+ *   Done by linker and locator			 (executable)		.text   ---->   .text(main.o),   .text(led.o)
+ *   with the help of linker script  {   [final.elf]   {	.data   ---->   .data(main.o),   .data(led.o)    }
+ *   provided by you										.bss    ----> 	 .bss(main.o),    .bss(led.o)
+ *															.rodata ----> .rodata(main.o), .rodata(led.o)
+ *
+ *			Storage of final executable in code memory (ROM or FLASH)
+ *						_______________________
+ *						|				      |
+ *						| Unused code memory  |
+ *						|				      |
+ *						|				      |
+ *						|_____________________|
+ *						|				      |
+ *						|		.data         |
+ *						| (initialized global |
+ *						| & static variables) |
+ *						|                     |  } Code memory (FLASH)
+ *						|_____________________|
+ *						|      .rodata        |
+ *						|_____________________|
+ *						|	   	     		  |
+ *						|       .text         |
+ *						|                     |
+ *						|_____________________|
+ *		0x0800_0000		|	  Vector Table    |
+ *
+ *
+ *   		 //Copy .data (data copy) from FLASH to SRAM
+ *
+ *						   Data Memory (SRAM)
+ *					    _______________________
+ *						|				      |
+ *						| 		 stack        |
+ *						|				      |
+ *						|				      |
+ *						|_____________________|
+ *						|				      |
+ *						|	  Unused SRAM 	  |
+ *						|                     |
+ *						|_____________________|
+ *						|     	 heap	      |
+ *						|_____________________|
+ *						|	   	 .bss         |
+ *						|(uninitialized global|
+ *						|and static variables)|
+ *						|_____________________|
+ *						|		.data		  |
+ *						|(initialized global  |
+ *		0x2000_0000		|and static variables)|
+ *
+ *			//transferring of .data section to RAM ( done by 'C' start-up code )
+ *
+ *	Since un-initialized variables dont carry any useful data to "remember", why would you store in FLASH and waste memory?
+ *	So, Compiler doesnt include those variables as part of .data section.
+ *
+ *	global initialized should be stored in ROM.
+ *
+ *	local data stored in stack.
+ *
+ *							(LMA)		(VMA) - virtual memory address
+ *	Variable				LOAD time	RUN time	Section		Note
+ *	--------------------------------------------------------------------------------------------------------
+ *	Global initialized		FLASH		RAM			.data		Should be copied from flash to ram by startup code
+ *	Global uninitialized	-----		RAM			.bss		Startup code reserves space for this data in RAM and initializes to zero
+ *	Global static init.		FLASH		RAM			.data		Should be copied from flash to ram by startup code
+ *	Global static uninit.	-----		RAM			.bss		Startup code reserves space for this data in RAM and initializes to zero
+ *	Local initialized		-----		STACK(RAM)	-----		Consumed at run time
+ *	Local uninitialized		-----		STACK(RAM)	-----		Consumed at run time
+ *	Local static init.		FLASH		RAM			.data		Should be copied from flash to ram by startup code
+ *	Local static uninit.	-----		RAM			.bss		Startup code reserves space for this data in RAM and initializes to zero
+ *	All global const		FLASH		-----		.rodata
+ *	All local const			-----		STACK(RAM)	-----		Treated as locals
+ *
+ *		__.bss (block started by symbol) and .data section__
+ *	. All the uninitialized global variables and uninitialized static variables are stored in the .bss section.
+ *	. Since those variables do not have any initial values, they are not required to be stored in the .data section since the .data section
+ *	  consumes FLASH space. Imagine what would happen if there is a large global uninitialized array in the program, and if that is kept
+ *	  in the .data section, it would unnecessarily consume flash space yet carries no useful information at all.
+ *	. .bss section doesn't consume any FLASH space unlike the .data section
+ *	. You must reserve RAM space for the .bss section by knowing its size and initialize those memory space to zero. This is typically done
+ *	  in startup code.
+ *	. Linker helps you to determine the final size of the .bss section. So, obtain the size information from a linker script symbols.
+ *
+ *
+ *		__Importance of start-up file__
+ *	. The startup file is responsible for setting up the right environment for the main user code to run.
+ *	. Code written in startup file runs before main(). So, you can say startup file calls main().
+ *	. Some part of the startup code file is the target (processor) dependent.
+ *	. Startup code takes care of vector table placement in code memory as required by the ARM cortex MX processor.
+ *	. Startup code may also take care of stack reinitialization.
+ *	. Startup code is responsible of .data, .bss section initialization in main memory.
+ *
+ *		Writing Start-up File
+ *	1. Create a vector table for your microcontroller. Vector tables are MCU specific.
+ *	2. Write a start-up code which initializes .data and .bss section in SRAM.
+ *	3. Call main()
+ *
+ *					__Vector Table for STM32F446xx__
+ *				  (97 IRQ's (IRQ0-IRQ96), 15 system exceptions, MSP)
+ *
+ *					Total memory consumed by VT
+ *					97 + 15 + 1 = word addressable memory locations
+ *						113 * 4 = 452 bytes
+ *	 				    _______________________
+ *						|Addr of IRQ96 handler|  0x0800_01C0
+ *						|_____________________|
+ *						|Addr of IRQ95 handler|  0x0800_01BC
+ *						|_____________________|
+ *						|Addr of IRQ94 handler|  0x0800_01B8
+ *						|_____________________|
+ *						|	 	  			  |
+ *						|                     |
+ *						|         ...         |
+ *						|     	    	      |
+ *						|_____________________|
+ *						|  Addr of hardfault  |  0x0800_000C
+ *					    |     handler         |
+ *						|_____________________|
+ *						| Addr of NMI handler |  0x0800_0008
+ *						|_____________________|
+ *						|Addr of reset handler|  0x0800_0004
+ *						|_____________________|
+ *						|  Initial MSP value  |  0x0800_0000
+ *
+ *	Creating a Vector Table:
+ *		. Create an array to hold MSP and handlers addresses.
+ *				uint32_t vectors[] = {store MSP and address of various handlers here};
+ *		. Instruct the compiler not to include the above array in .data section but in a different user defined section.
+ *
+ *  __attribute__((section(".isr_vector")))
+ *  //check sections after defining ".isr_vector" section in startup code so it doesn't get put into .data or .bss
+ *		arm-none-eabi-objdump.exe -h stm32_startup.o
+ *
+ *	Function Attribute: Weak and Alias
+ *		Weak: Lets programmer override already defined weak function (dummy) with the same function name
+ *	    Alias: Lets programmer to give alias name for a function
+ *
+ *		__LINKER SCRIPT__
+ *	Transferring of .data section to RAM ('C' start-up)
+ *	Need to know boundaries:  _edata, _sdata, _etext etc.
+ *
+ *	. Linker script is a text file which explains how different sections of the object files should be merged to create an output file.
+ *	. Linker and locator combination assigns unique absolute addresses to different sections of the output file by referring to address information mentioned
+ *	  in the linker script.
+ *	. Linker script also includes the code and data memory address and size information.
+ *	. Linker scripts are written using the GNU linker command language.
+ *	. GNU linker script has the file extension of .ld
+ *	. You must supply linker script at the linking phase to the linker using -T option.
+ *
+ *	Linker script commands:
+ *	ENTRY, MEMORY, SECTIONS, KEEP, ALIGN, AT>
+ *
+ *	Entry command:
+ *	. This command is used to set the "Entry point address" information in the header of final elf file generated.
+ *	. In our case, "Reset_Handler" is the entry point into the application. The first piece of code that executes right after
+ *	  the processor reset.
+ *	. The debugger uses this information to locate the first function to execute.
+ *	. Not a mandatory command to use, but required when you debug the elf file using the debugger (GDB)
+ *	. Syntax: Entry(_symbol_name_)
+ *	  Entry(Reset_Handler)
+ *
+ *  Memory command:
+ *  . This command allows you to describe the different memories present in the target and their start address and size information.
+ *  . The linker uses information mentioned in this command to assign addresses to merged sections.
+ *  . The information is given under this command also helps the linker to calculate total code and data memory consumed so far
+ *    and throw an error message if data, code, heap or stack areas cannot fit into available size.
+ *  . By using memory command, you can fine-tune various memories available in your target and allow different sections
+ *    to occupy different memory areas.
+ *  . Typically one linker script has one memory command.
+ *  . Syntax:
+ *    MEMORY
+ *    {
+ *    	name(attr) : ORIGIN = origin, LENGTH = len
+ *    }
+ *
+ *	. Attributes:
+ *		R		Read-only sections
+ *		W		Read and write sections
+ *		X		Sections containing executable code.
+ *		A		Allocated sections
+ *		I		Initialized sections
+ *		L		Same as 'I'
+ *		!		Invert the sense of any of the following attributes
+ *
+ *	. STM32F446RE      Flash Size (512kB)  SRAM1 Size (112kB)   SRAM2 Size (16kB)
+ *
+ *	Sections command:
+ *	. SECTIONS command is used to create different output sections in the final elf executable generated.
+ *	. Important command by which you can instruct the linker how to merge the input sections to yield an output section.
+ *	. This command also controls the order in which different output sections appear in the elf file generated.
+ *	. By using this command, you also mention the placement of a section in a memory region. For example, you instruct the linked
+ *	  to place the .text section in the FLASH memory region, which is described by the MEMORY command.
+ *	. >(vma)AT>(lma)   virtual memory address AT> load memory address
+ *
+ *	Location counter (.)
+ *	. This is a special linker symbol denoted by a dot '.'
+ *	. This symbol is called "location counter" since linker automatically updates this symbol with location(address) information.
+ *	. You can use this symbol inside the linker script to track and define boundaries of various sections.
+ *	. You can also set location counter to any specific value while writing linker script.
+ *	. Location counter should appear only inside the SECTIONS command.
+ *	. The location counter is incremented by the size of the output section.
+ *	. Location counter always tracks VMA (virtual memory address) not LMA (load memory address)
+ *
+ *	Linker script symbol:
+ *	. A symbol is the name of an address
+ *	. A symbol declaration is not equivalent to a variable declaration what you do in your 'C' application.
+ *	. Compiler maintains a symbol table in the .o file.
+ *
+ *  command in cmd:
+ *  arm-none-eabi-gcc -nostdlib -T stm32_ls.ld *.o -o final.elf
+ *
+ *  to see all symbols:
+ *  arm-none-eabi-nm.exe final.elf
+ *
+ *
+ *		__Downloading and Debugging Executable__
+ *	   Host        download      Dev board + MCU
+ *		[.elf]  ------------------>  [Flash]
+ *
+ *	How to download executable to target
+ *
+ *	. You'll need OpenOCD on the host and a In-Circuit Programmer/Debugger (Debug adapter) connected via USB. The debug adapter connects to target via 
+ *    SWD or JTAG.
+ *
+ *	OpenOCD(Open On Chip Debugger)
+ *	. The Open On-Chip Debugger (OpenOCD) aims to provide debugging, in-system programming, and boundary-scan testing for embedded target devices.
+ *	. It is free and opensource host application allows you to program, debug, and analyze your applications using GDB.
+ *	. It supports various target boards based on different processor architecture.
+ *	. OpenOCD currently supports many types of debug adapters: USB based, parallel port-based, and other standalone boxes that run OpenOCD internally.
+ *	. GDB Debug: it allows ARM7 (ARM7TDMI and ARM720T), ARM9 (ARM920T, ARM922T, ARM926EJ-S, ARM966E-S), XScale (PXA25x, IXP42x), Cortex-M3 (Stellaris
+ *    LM3, ST STM32, and Energy Micro EFM32) and Intel Quark (x10xx) based cores to be debugged via the GDB protocol.
+ *	. Flash Programming: Flash writing is supported for external CFI-compatible NOR flashes (Intel and AMD/Spansion command set) and several internal 
+ *    flashes (LPC1700, LPC1800, LPC2000, LPC4300, AT91SAM7, AT91SAM3U, STR7x, STR9x, LM3, STM32x, and EFM32). Preliminary support for various NAND 
+ *    flash controllers (LPC3180, Orion, S3C24xx, more) is included.
+ *
+ *	  __Programming adapters__
+ *	 . Programming adapters are used to get access to the debug interface of the target with native protocol signaling such as SWD or JTAG since
+ *	   HOST doesn't support such interfaces.
+ *	 . It does protocol conversion. For example, commands and messages coming from host application in the form of USB packets will be converted
+ *	   to equivalent debug interface signaling (SWD or JTAG) and vice versa.
+ *	 . Mainly debug adapter helps you to download and debug the code.
+ *	 . Some advanced debug adapters will also help you to capture trace events such as on the fly instruction trace and profiling information.
+ *
+ *		Popular debug adapters:
+ *	Segger J-LINK EDU - JTAG/SWD Debugger (used at Byton)
+ *	Keil ULINK Pro
+ *	ST-LINK/V2  (the ones embedded into nucleo and discovery boards only use SWD not JTAG)
+ *
+ *	__Path to CPU:__
+ *	HostPC -> OpenOCD -> ST-LINK / USB -> SWD/JTAG adapter -> DP (SWJ-DP / SW-DP) via SWDCLK & SWDIO -> AHB-AP -> AHB interconnect -> Core
+ *																												  |--> AHB bus -> SRAM/Flash/other peri.
+ *	__Steps to download the code using OpenOCD__
+ *	1. Download and install OpenOCD
+ *	2. Install Telnet client (for windows you can use PuTTY software)
+ *	   . If you cannot use Telnet application you can also use "GDB client"
+ *	3. Run OpenOCD with the board configuration file
+ *	4. Connect to the OpenOCD via Telnet Client or GDB client
+ *	5. Issue commands over Telnet or GDB Client to OpenOCD to download and debug the code.
+ *
+ *	to start openOCD with the stm32f4 nucleo board:
+ *
+ *	make clean
+ *	make load
+ *
+ *	Once OpenOCD server is running. Now you can connect to this server over various client programs such as telnet client, GDB clients, etc.
+ *
+ *	Now open a 2nd terminal for GDB after running "make load" to start the OpenOCD server.
+ *
+ *	arm-none-eabi-gdb.exe
+ *	target remote localhost:3333
+ *
+ *	then,
+ *	monitor reset init
+ *
+ *	then,
+ *	monitor flash write_image erase final.elf
+ *
+ *	then,
+ *	monitor reset halt
+ *
+ *	then,
+ *	monitor resume
+ *
+ *	OpenOCD memory access commands (openocd.org/doc/html/General-Commands.html)
+ *	mdd, mdw, mdh, mdb
+ *
+ *	monitor mdw 0x20000000 4
+ *
+ *	breakpoints:
+ *	monitor bp 0x080001fe 2 hw   //set breakpoint at task1_handler
+ *
+ *		__'C' standard library newlib & new-lib-nano__
+ *	Newlib:
+ *	. Newlib is a 'C' standard library implementation intended for use on embedded systems, and it is introduced by Cygnus Solutions (now Red Hat)
+ *	. "Newlib" is written as a Glibc (GNU libc) replacement for embedded systems. It can be used with no OS ("bare metal") or with a lightweight RTOS
+ *	. Newlib ships with gnu ARM toolchain installation as the default C standard library
+ *	. GNU libc (glibc) includes ISO C, POSIX, System V, and XPG interfaces. uClibc provides ISO C, POSIX and System V, while Newlib provides only ISO C.
+ *
+ *	Newlib-nano:
+ *	. Due to the increased feature set in newlib, it has become too bloated to use on the systems where the amount of memory is very much limited.
+ *	. To provide a C library with a minimal memory footprint, suited for use with micro-controllers, ARM introduced newlib-nano based on newlib.
+ *
+ *	Low level system calls:
+ *	. The idea of Newlib is to implement the hardware-independent parts of the standard C library and rely on a few low-level system calls that must
+ *	  be implemented with the target hardware in mind.
+ *	. When you are using newlib, you must implement the system calls appropriately to support devices, file-systems, and memory management.
+ *
+ *							printf()    Embedded application
+ *							   |
+ *							   v
+ *						  Newlib-Nano   'C' standard library
+ *			  			   _write();
+ *			  		  	       |
+ *	_write function			   v
+ *	implemented here ->	 _write(){...}    Stubs (low level target
+ *	will receive all	   |    |    |		specific call implementation)
+ *  the strings        	   v    v    v
+ *  pre-formatted by     UART  ITM  LCD
+ *  printf():
+ *
+ *
+ *  Linking the c standard library adds a lot of extra text sections to the obj-dump final.elf file. You have to merge them separately.
+ *
+ *				Reset_handler()
+ *					  |
+ *			Initialize data section
+ *			    	  |
+ *			Initialize bss section
+ *			    	  |
+ *			Initialize 'C' std library    __libc_init_array();
+ *			    	  |
+ *			       main();
+ *
+ *
+ *	gcc.gnu.org/onlinedocs/gcc/ARM-Options.html
+ *
+ *	To use std c library with semi-hosting support, change the --specs=nano.specs (Newlib-nano) in the Makefile to --specs=rdimon.specs
+ *
+ *	to enable semihosting feature in the PuTTY OpenOCD terminal,
+ *	arm semihosting enable
+ *
+ *	<END OF COURSE!>
+ */
+ 
+ 
+ 
+ 
+ 
+ 
+/************************************************************/
+					my_workspace (folder)
+/************************************************************/
+
+///////////////////////////// Linker Notes.txt /////////////////////////////
+ENTRY(Reset_Handler)
+
+MEMORY
+{
+	FLASH(rx):ORIGIN =0x08000000,LENGTH =512K
+	SRAM(rwx):ORIGIN =0x20000000,LENGTH =128K
+}
+
+__max_heap_size = 0x200; /* A symbol declaration. Not a variable!!! */
+__max_stack_size = 0x400; /* A symbol declaration. Not a variable!!! */
+
+SECTIONS
+{
+	/* This section should include .text section of all input files */
+	.text :
+	{
+		/* merge all .isr_vector section of all input files */
+		*(.isr_vector)
+		/* merge all .text section of all input files */
+		*(.text)
+		/* merge all .rodata section of all input files */
+		*(.rodata)
+		. = ALIGN(4);
+		_etext = .; /* Store the updated location counter value into a symbol '_etext' */
+	}> FLASH 
+	/* >(vma)AT>(lma)   virtual memory address AT> load memory address */
+	/* >FLASH AT> FLASH  is the same as writing just FLASH */
+	
+	/* This section should include .data section of all input files */
+	.data :
+	{
+		_sdata = .; /* Assign a value to a symbol '_sdata' */
+		/* here merge all .data section of all input files */
+		*(.data)
+		. = ALIGN(4);
+		_edata = .; /* Store the updated location counter value into a symbol '_edata' */
+	}> SRAM AT> FLASH
+	/* >(vma)AT>(lma)   virtual memory address AT> load memory address */
+	
+	/* This section should include .bss section of all input files */
+	.bss :
+	{
+		_sbss = .; /* Assign a value to a symbol '_sdata' */
+		*(.bss)
+		*(COMMON)
+		. = ALIGN(4);
+		_ebss = .; /* Store the updated location counter value into a symbol '_ebss' */
+	}> SRAM
+	/* >(vma)AT>(lma)   virtual memory address AT> load memory address */
+} 
+
+/////////////////////////// led.c ///////////////////////////////
+#include<stdint.h>
+#include "led.h"
+
+
+void delay(uint32_t count)
+{
+  for(uint32_t i = 0 ; i < count ; i++);
+}
+
+// RED1 = PB5, GREEN = PB10, RED2 = PB9 , YELLOW = PB8
+void led_init_all(void)
+{
+	uint32_t *pRccAhb1enr = (uint32_t*)0x40023830;
+	uint32_t *pGpiobModeReg = (uint32_t*)0x40020400;
+
+	/* 											  -- AHB1PERIPH_BASE --
+	 *  GPIOB_BASE = AHB1PERIPH_BASE + 0x0400 = (PERIPH_BASE + 0x0002_0000) + 0x0400 = 0x4000_0000 + 0x0002_0000 + 0x0000_0400 = 0x4002_0400
+	 *
+	 *	MODER   0x00
+	 *	OTYPER	0x04
+	 *	OSPEEDR	0x08
+	 *	PUPDR	0x0C
+	 *	IDR		0x10
+	 *	ODR		0x14
+	 *	BSRR	0x18
+	 *	LCKR	0x1C
+	 *	AFR[2]	0x20-0x24
+	 *
+	 */
+
+	*pRccAhb1enr |= ( 1 << 1); //GPIOB enable
+
+	*pGpiobModeReg |= ( 1 << (2 * LED_RED1));
+	*pGpiobModeReg |= ( 1 << (2 * LED_GREEN));
+	*pGpiobModeReg |= ( 1 << (2 * LED_RED2));
+	*pGpiobModeReg |= ( 1 << (2 * LED_YELLOW));
+
+#if 0
+	//configure the outputtype
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_RED1));
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_GREEN));
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_RED2));
+	*pGpioOpTypeReg |= ( 1 << (2 * LED_YELLOW));
+#endif
+
+    led_off(LED_RED1);
+    led_off(LED_GREEN);
+    led_off(LED_RED2);
+    led_off(LED_YELLOW);
+}
+
+void led_on(uint8_t led_no)
+{
+  uint32_t *pGpiobDataReg = (uint32_t*)0x40020414;
+  *pGpiobDataReg |= ( 1 << led_no);
+
+}
+
+void led_off(uint8_t led_no)
+{
+	  uint32_t *pGpiobDataReg = (uint32_t*)0x40020414;
+	  *pGpiobDataReg &= ~( 1 << led_no);
+
+}
+
+/////////////////////////// led.h ///////////////////////////////
+#define LED_RED1 	 5
+#define LED_GREEN 	 10
+#define LED_RED2     9
+#define LED_YELLOW   8
+
+#define DELAY_COUNT_1MS 		 1250U
+#define DELAY_COUNT_1S  		(1000U * DELAY_COUNT_1MS)
+#define DELAY_COUNT_500MS  		(500U  * DELAY_COUNT_1MS)
+#define DELAY_COUNT_250MS 		(250U  * DELAY_COUNT_1MS)
+#define DELAY_COUNT_125MS 		(125U  * DELAY_COUNT_1MS)
+
+void led_init_all(void);
+void led_on(uint8_t led_no);
+void led_off(uint8_t led_no);
+void delay(uint32_t count); 
+
+
+
+/////////////////////////// main.c ///////////////////////////////
+
+/*
+ * 		__Implementing a Scheduler__
+ * 	. Let's implement a scheduler which schedules multiple user tasks in a round-robin fashion by carrying out context switch operation.
+ * 	. Round robin scheduling method is, time slices are assigned to each task in equal portions and in circular order.
+ * 	. First will use systick handler to carry out the context switch operation between multiple tasks.
+ * 	. Later we will change the code using pendSV handler.
+ *
+ *		__What is a task?__
+ *	. A task is a piece of code, or a 'c' function, which does a specific job when it is allowed to run on the CPU.
+ *	. A task has its own stack to create its local variables when it runs on the CPU. Also when the scheduler decides to remove
+ *	  a task from the CPU, the scheduler first saves the context (state) of the task in task's private stack.
+ *	. To summarize, a piece of code or a function is called a task when it is schedulable and never loses its 'state' unless it
+ *	  is deleted permanently.
+ *
+ *	PSP (Thread Mode)			MSP (Handler Mode)
+ *	T1 -> Stack-T1			Scheduler (Systick handler / PendSV handler)
+ *	T2 -> Stack-T2
+ *	T3 -> Stack-T3
+ *	T4 -> Stack-T4
+ *
+ *									__Stack assessment__ (Full Descending)
+ *	RAM_START																				              RAM_END
+ *	<------------------------------------128KB of RAM (SRAM1+SRAM2)--------------------------------------------->
+ *								| Private Stack | Private Stack | Private Stack | Private Stack | Private Stack |
+ *								|   Scheduler   |	   T4	    |      T3	    |      T2	    |      T1       |
+ *								|<-----1kB----->|<-----1kB----->|<-----1kB----->|<-----1kB----->|<-----1kB----->|
+ *								|<-------------------------------------5kB------------------------------------->|
+ *																			   /                /\               \
+ *																	T2_STACK_END   T2_STACK_START T1_STACK_END	T1_STACK_START
+ *																						 SP <---Stack Consumption
+ *
+ *			__Scheduling policy selection__
+ *	. We will be using round robin preemptive scheduling
+ *	. No task priority
+ *	. We will use SysTick timer to generate exception for every 1ms to run the scheduler code
+ *
+ *			__What is scheduling__
+ *	. Scheduling is an algorithm which takes the decision of preempting a running task from the CPU and takes the decision about which task
+ *	  should run on the CPU next.
+ *	. The decision could be based on many factors such as system load, the priority of tasks, shared resource access, or a simple round-robin method.
+ *
+ *			__What is context switching?__
+ *	. Context switching is the procedure of switching out of the currently running task from the processor after saving the task's execution context
+ *	  or state and switching in the next task's to run on the CPU by retrieving the past execution context or state of the task.
+ *
+ *			__What is execution context or state of a task?__
+ *	. Inside a microcontroller, there is a processor or CPU (ARM cortex m3/m4).
+ *	. Inside the processor, there is/are processor core(s). A processor core is a collection of various units (general purpose registers, ALU 
+ *    (Arithmetic Logic Unit), Status registers, and special registers).
+ *	. A processor also has its own peripherals such as NVIC (controls interrupts and exceptions from various parts of the microcontroller).
+ *	  It also has Memory Protection Unit (MPU), System Control Block (SCB), Floating Point Unit (FPU), Debug Unit.
+ *	. When a task is running on the processor, it makes use of general purpose registers, ALU, status registers and special registers. The collection 
+ *    of general purpose registers + some special register + status registers is known as the 'state of a task'.
+ *	. When the scheduler wants to switch out a task, then it should save its intermediate results of the operation which are already stored in the 
+ *    general purpose registers and it should also store the status register value and some special register values into the private stack of the task.
+ *	. Only after that can a scheduler switch out a task.
+ *
+ *
+ *  		(**)Important registers to include with 'state of a task'
+ *
+ *	**General purpose registers: R0-R7 (Low registers) & R8-R12 (High registers)
+ *
+ *	**SP(R13): Stack pointers: PSP and MSP (banked versions of SP).
+ *			   Another important thing, is the current value or current state of task private stack which is stored in PSP which we are using for the 
+ *             stack pointers of the user tasks.
+ *	**LR(R14): LR is also very important. Because it reveals some of the important information about the task handler, its stack pointer selection and 
+ *             other things.
+ *	**PC(R15): PC is very important. Why? Because, when the scheduler was preempting or switching out a task, the PC will be holding the address of the 
+ *             next instruction of that task handler. When the scheduler wants to switch in that task some time later, it should know where it should 
+ *             return. Scheduler also preserves the value of PC.
+ *
+ *	Special registers: **PSR (Program Status Register) gives the snapshot of the current state like whether zero flag, negative flag or other flags
+ *                       are set or not.
+ *	                   PRIMASK, FAULTMASK, BASEPRI (Exception Mask Registers)  \  [Privileged registers]  Not important
+ *	                   CONTROL (CONTROL register)                              /  [Privileged registers]  Not important
+ *
+ *	User task is usually running with unprivileged access, so the privileged registers aren't important to save/keep track of in the 'state of a task'.
+ *	The kernel or the scheduler is what alters these registers.
+ *
+ *			__Case of T1 switching out, T2 switching in__
+ *
+ *	1) Running T1
+ *	2) Save the context of T1 to T1's private stack      	(PUSH)  	[Context Saving]
+ *	3) Save the PSP value of T1								  			[Context Saving]
+ *	4) Get current PSP value of T2							  			[Context Retrieving]
+ *	5) Retrieve the context of T2 from T2's private stack 	(POP)		[Context Retrieving]
+ *	6) Run T2
+ *
+ *			__Stacking and Unstacking during exception__
+ *	1) Task 1 is running in thread mode using PSP.
+ *	2) Exception happens (SysTick Exception lets say)
+ *	3) Thread mode code (user task) is preempted, stacking occurs, then handler mode code runs (SysTick exception handler using MSP)
+ *		a) The processor saves a stack frame when the exception happens, which is the context or state of task 1 in the stack.
+ *		b) Starting at the highest memory address (Full Descending stack), the stack frame is pushed with xPSR at the highest memory address and R0 at 
+ *         the lowest. PSP is now pointing at the location of R0.
+ *  4) After the exception handler exits, unstacking begins (stack frame is retrieved/popped back) before returning to Task 1 (thread mode code using PSP).
+ *  	a. PSP is now pointing to the location of the last stacked item, which is right before where xPSR used to be.
+ *  5) We actually don't want it to return to Task 1. We want the scheduler to take it to Task 2.
+ *  6) In the exception handler, you should change the PSP value (the previous PSP value belongs to Task 1's private stack). We want to change this to 
+ *     point to Task 2's private stack.
+ *  7) We want to give the address to Task 2's Handler to PC (return address) which is also R15. Now when we exit the exception, the processor will 
+ *     automatically jump to Task 2's handler instead of Task 1.
+ *
+ *		Stack Frame only includes: R0, R1, R2, R3, R12, LR, PC, xPSR
+ *		State of Task includes: R0 - R12, PSP (R13), LR (R14), PC (R15), PSR
+ *
+ *		So the processor already partially saves the state of the task, but it is missing some registers that should also be included.
+ *		In the exception handler, the remaining registers (R4 - R11) and PSP (R13-SP) need to also be saved.
+ *
+ *	Exercise:
+ *	Configure the systick timer to produce exception every 1ms
+ *
+ *	SysTick count value calculation:
+ *		. Processor Clock = 16MHz
+ *		. SysTick timer count clock = 16MHz
+ *		. 1ms is 1kHz in frequency domain
+ *		. So, to bring down SysTick timer count clock from 16MHz to 1kHz, use a divisor (reload value)
+ *		. Reload value = 16000
+ *
+ *	For stm32-f4 mcu's, system clock is 16MHz (which is derived from HSI or high speed internal clock)
+ *	The processor clock and count clock (systick timer) derive their signal from the 16MHz system clock (HSI).
+ *
+ *	SysTick timer count clock = 16MHz.
+ *	For 1 count it takes 0.0625us
+ *	0.0625us delay -> 1 count
+ *	1us delay = 16 count
+ *	1ms delay = 16000 count
+ *
+ *	4-32 System timer registers summary
+ *  ---------------------------------------------
+ *	0xE000E010 	SYST_CSR	RW	Privileged	SysTick Control and Status Register
+ *	0xE000E014 	SYST_RVR	RW	Privileged	SysTick Reload Value Register
+ *	0xE000E018 	SYST_CVR	RW	Privileged	SysTick Current Value Register
+ *	0xE000E01C 	SYST_CALIB	RO	Privileged	SysTick Calibration Value Register
+ *
+ *
+ *	Saving Context (PUSH) of T1: SF2
+ *
+ *	Basically when exception happens, the stacking process occurs which saves the stack frame (SF1) which includes (in order of highest to lowest memory)
+ *	xPSR, PC, LR, R12, R3, R2, R1, R0 (SP-PSP was pointing here). We also have to manually push the remaining registers of the "state of a task" after SF1
+ *	(we call this SF2). Then R11,R10,R9,R8,R7,R6,R5,R4 should be pushed after(again in order of highest to lowest memory location - FD stack). The SP (PSP)
+ *	is now pointing to R4.
+ *
+ *	Retrieving (POP) Context of T2 : SF2
+ *
+ *	Opposite process. First program the PSP register with the correct value of task 2's current stack pointer. Then you pop SF2. Then you exit exception 
+ *  handler (which unstacks SF1). Execution will resume at task 2.
+ *
+ *	__Task's stack area init and storing of dummy SF__
+ *	. Each task can consume a maximum of 1kB of memory as a private stack.
+ *	. This stack is used to hold tasks local variables and context (SF1 + SF2)
+ *	. When a task is getting scheduled for the very first time, it doesn't have any context. So, the programmer should store the dummy SF1 and SF2 in 
+ *    Task's area as part of "task initialization" sequence before launching the scheduler.
+ *
+ *  		__Introducing Blocking State for Tasks__
+ *  . Software based delay (for loop) wastes a ton of CPU cycles and won't produce an accurate delay. Much more efficient to use a timer or blocking
+ *    mechanism. The goal is to not waste any CPU cycles.
+ *  . When a task has got nothing to do, it should simply call a delay function which should put the task into the blocked state from running state until
+ *    the specified delay is elapsed.
+ *  . We should now maintain 2 states for a task. Running and Blocked.
+ *  . The scheduler should schedule only those tasks which are in Running state.
+ *  . The scheduler also should unblock the blocked tasks if their blocking period is over and put them back to running state.
+ *
+ *			__TCB(Task Control Block) Structure__
+ *	. Refer to TCB_t struct
+ *
+ *			__Block a task for a given number of ticks__
+ *	. Let's introduce a function called "task_delay" which puts the calling task to the blocked state for a given number of ticks
+ *	. E.g., task_delay(1000); if a task calls this function then task_delay function puts the task into blocked state and allows the
+ *	  next task to run on the CPU.
+ *	. Here, the number 1000 denotes a block period in terms of ticks, the task who calls this function is going to block for 1000 ticks
+ *	  (systick exceptions), i.e., for 1000 ms since each tick happens for every 1ms.
+ *	. The scheduler should check elapsed block period of each blocked task and put them back to running state if the block period is over.
+ *
+ *			__Idle Task__
+ *	What if all the tasks are blocked? Who is going to run on the CPU?
+ *	. We will use the idle task to run on the CPU if all the tasks are blocked. The idle task is like user tasks but only runs when all
+ *	  user tasks are blocked, and you can put the CPU to sleep.
+ *	. Idle task should always be in running state.
+ *
+ *			__Global tick count__
+ *	. How does the scheduler decide when to put the blocked state tasks (blocked using task_delay function) back to the running state?
+ *	. It has to compare the task's delay tick count with a global tick count
+ *	. So, scheduler should maintain a global tick count and update it for every systick exception
+ *
+ */
+
+#include <stdint.h>
+#include <stdio.h>
+#include "main.h"
+#include "led.h"
+
+//creating 4 tasks
+void task1_handler(void); //Task 1
+void task2_handler(void); //Task 2
+void task3_handler(void); //Task 3
+void task4_handler(void); //Task 4
+
+void init_systick_timer(uint32_t tick_hz);
+__attribute__((naked)) void init_scheduler_stack(uint32_t sched_top_of_stack);
+void init_tasks_stack(void);
+void enable_processor_faults(void);
+__attribute__((naked)) void switch_sp_to_psp(void);
+void save_psp_value(uint32_t stack_addr);
+void update_global_tick_count(void);
+uint32_t get_psp_value(void);
+
+void task_delay(uint32_t tick_count);
+
+uint8_t current_task = 1; //task1 is running
+
+uint32_t g_tick_count = 0;
+
+const uint32_t const_v_1 = 100;
+const uint32_t const_v_2 = 100;
+const uint8_t const_v_3 = 100;
+
+typedef struct
+{
+	uint32_t psp_value;
+	uint32_t block_count;
+	uint8_t current_state;
+	void (*task_handler)(void);
+}TCB_t;
+
+//v this is shared data/memory area. there could be a chance of race condition between thread mode code and handler mode code.
+TCB_t user_tasks[MAX_TASKS]; //global array accessed by bother user_tasks and the exception handlers
+
+void NMI_Handler(void)
+{
+	//here implement your real logic of handling NMI
+}
+
+//semihosting init function
+extern void initialise_monitor_handles(void);
+
+int main(void)
+{
+	enable_processor_faults();
+	
+	initialise_monitor_handles();
+
+	init_scheduler_stack(SCHED_STACK_START);
+
+	printf("Implementation of simple task scheduler\n");
+	
+	init_tasks_stack();
+
+	led_init_all();
+
+	init_systick_timer(TICK_HZ);
+
+	switch_sp_to_psp();
+
+	task1_handler();
+
+	for(;;);
+}
+
+//Tasks never return, they are executing always.
+void idle_task(void)
+{
+	while(1);
+}
+
+
+void task1_handler(void)
+{
+	while(1)
+	{
+		printf("Task 1 is executing\n");
+		led_on(LED_RED1);
+		task_delay(1000);
+		led_off(LED_RED1);
+		task_delay(1000);
+	}
+}
+
+void task2_handler(void)
+{
+	while(1)
+	{
+		printf("Task 2 is executing\n");
+		led_on(LED_GREEN);
+		task_delay(500);
+		led_off(LED_GREEN);
+		task_delay(500);
+	}
+}
+
+void task3_handler(void)
+{
+	while(1)
+	{
+		printf("Task 3 is executing\n");
+		led_on(LED_RED2);
+		task_delay(250);
+		led_off(LED_RED2);
+		task_delay(250);
+	}
+}
+
+void task4_handler(void)
+{
+	while(1)
+	{
+		printf("Task 4 is executing\n");
+		led_on(LED_YELLOW);
+		task_delay(125);
+		led_off(LED_YELLOW);
+		task_delay(125);
+	}
+}
+
+void init_systick_timer(uint32_t tick_hz)
+{
+	uint32_t *pSRVR = (uint32_t*)0xE000E014;
+	uint32_t *pSCSR = (uint32_t*)0xE000E010;
+
+	//Calculation of reload value
+	uint32_t count_value = ((SYSTICK_TIM_CLK / tick_hz) - 1);
+
+	//Clear the value of SRVR (systick reload value register)
+	*pSRVR &= ~(0x00FFFFFFFF);
+
+	//load the value in to SRVR
+	*pSRVR |= count_value;
+
+	//do some settings
+	*pSCSR |= (1 << 1); //enables SysTick exception request
+	*pSCSR |= (1 << 2); //indicates the clock source (processor clock)
+
+	//enable the systick
+	*pSCSR |= (1 << 0); //enables the counter
+}
+
+//naked function has no prologue/epilogue sequences
+__attribute__((naked)) void init_scheduler_stack(uint32_t sched_top_of_stack)
+{
+	__asm volatile("MSR MSP, %0": : "r" (sched_top_of_stack) : );
+	__asm volatile("BX LR");
+}
+
+//initialize dummy task stacks
+void init_tasks_stack(void)
+{
+	user_tasks[0].current_state = TASK_READY_STATE;
+	user_tasks[1].current_state = TASK_READY_STATE;
+	user_tasks[2].current_state = TASK_READY_STATE;
+	user_tasks[3].current_state = TASK_READY_STATE;
+	user_tasks[4].current_state = TASK_READY_STATE;
+
+	user_tasks[0].psp_value = IDLE_STACK_START;
+	user_tasks[1].psp_value = T1_STACK_START;
+	user_tasks[2].psp_value = T2_STACK_START;
+	user_tasks[3].psp_value = T3_STACK_START;
+	user_tasks[4].psp_value = T4_STACK_START;
+
+	user_tasks[0].task_handler = idle_task;
+	user_tasks[1].task_handler = task1_handler;
+	user_tasks[2].task_handler = task2_handler;
+	user_tasks[3].task_handler = task3_handler;
+	user_tasks[4].task_handler = task4_handler;
+
+	uint32_t *pPSP;
+
+	for(int i = 0; i < MAX_TASKS; i++)
+	{
+		//place PSP starting at T[i]_TASK_START
+		pPSP = (uint32_t*) user_tasks[i].psp_value;
+
+		pPSP--; //xPSR (Start of SF1)
+		*pPSP = DUMMY_XPSR; //0x01000000
+
+		pPSP--; //PC
+		*pPSP = (uint32_t) user_tasks[i].task_handler;
+
+		pPSP--; //LR
+		*pPSP = 0xFFFFFFFD; //return to thread mode, FPU off, with PSP
+
+		//allocate memory and initialize to 0 for R0-R13
+		for(int j = 0; j < 13; j++)
+		{
+			pPSP--;
+			*pPSP = 0;
+		}
+
+		user_tasks[i].psp_value = (uint32_t)pPSP; //preserve value of PSP
+	}
+}
+
+void enable_processor_faults(void)
+{
+	uint32_t *pSHCSR = (uint32_t*)0xE000ED24;
+
+	*pSHCSR |= (1 << 16); //mem manage
+	*pSHCSR |= (1 << 17); //bus fault
+	*pSHCSR |= (1 << 18); //usage fault (if disabled, divide by zero treated as HardFault)
+}
+
+uint32_t get_psp_value(void)
+{
+	return user_tasks[current_task].psp_value;
+}
+
+void save_psp_value(uint32_t current_psp_value)
+{
+	user_tasks[current_task].psp_value = current_psp_value;
+}
+
+void update_next_task(void)
+{
+	int state = TASK_BLOCKED_STATE;
+
+	for(int i = 0; i < (MAX_TASKS); i++)
+	{
+		current_task++;
+		current_task %= MAX_TASKS;
+		state = user_tasks[current_task].current_state;
+		if((state == TASK_READY_STATE) && (current_task != 0)) //idle task is always ready
+			break;
+	}
+
+	if(state != TASK_READY_STATE) //all tasks blocked
+		current_task = 0; //idle task
+}
+
+__attribute__((naked)) void switch_sp_to_psp(void)
+{
+	//1. initialize the PSP with TASK1 stack start address
+	//get the value of psp of current_task (all of this uses MSP as SP)
+	__asm volatile("PUSH {LR}"); //preserve LR which connects back to main() before changing its value when entering get_psp_value() function
+	__asm volatile("BL get_psp_value"); //BL = branch with link, so we can return to this function while storing PSP in R0
+	__asm volatile("MSR PSP, R0"); //initialize PSP
+	__asm volatile("POP {LR}"); //retrieve LR that connects back to main()
+
+	//2. change SP to PSP using CONTROL register
+	__asm volatile("MOV R0, #0x02");   //SPSEL set to PSP
+	__asm volatile("MSR CONTROL, R0");
+	__asm volatile("BX LR"); //return to main()
+}
+
+void schedule(void)
+{
+	//pend the pendsv exception
+	uint32_t *pICSR = (uint32_t*)0xE000ED04;
+	*pICSR |= (1 << 28);
+}
+
+void task_delay(uint32_t tick_count)
+{
+	//disable interrupt (avoid race condition)
+	INTERRUPT_DISABLE();
+
+	if(current_task)
+	{
+		//global variable access shared between thread & handler mode code
+		user_tasks[current_task].block_count = g_tick_count + tick_count;
+		user_tasks[current_task].current_state = TASK_BLOCKED_STATE;
+		schedule();
+	}
+
+	//enable interrupt (avoid race condition)
+	INTERRUPT_ENABLE();
+}
+
+//scheduler to be used for context switching
+__attribute__((naked)) void PendSV_Handler(void)
+{
+	/* Save the context of current task */
+	//1. Get current running task's PSP value
+	__asm volatile("MRS R0, PSP");
+
+	//2. Using that PSP value store SF2(R4 to R11)
+	//cant use PUSH because Handler mode always uses MSP
+	__asm volatile("STMDB R0!, {R4-R11}"); //STMDB (store multiple registers, decrement before -- essentially PUSH operation)
+
+	__asm volatile("PUSH {LR}");
+
+	//3. Save the current value of PSP
+	//R0 already has updated PSP value from previous line, so when BL executes it will be passed into the function save_psp_value()
+	__asm volatile("BL save_psp_value");
+
+
+	/* Retrieve the context of the next task */
+	//1. Decide next task to run
+	__asm volatile("BL update_next_task");
+
+	//2. get its past PSP value
+	__asm volatile("BL get_psp_value");
+
+	//3. Using that PSP value retrieve SF2(R4 to R11)
+	__asm volatile("LDMIA R0!, {R4-R11}"); //LDMIA (load multiple registers and increment after -- essentially POP operation)
+
+	//4. update PSP and exit
+	__asm volatile("MSR PSP, R0");
+
+	__asm volatile("POP {LR}");
+
+	//this step is required for naked functions as the compiler wont put prologue and epilogue sequences.
+	__asm volatile("BX LR");
+}
+
+void update_global_tick_count(void)
+{
+	g_tick_count++;
+}
+
+void unblock_tasks(void)
+{
+	for(int i = 1; i < MAX_TASKS; i++) //no need to check i=0 because idle task is always running
+	{
+		if(user_tasks[i].current_state != TASK_READY_STATE)
+		{
+			if(user_tasks[i].block_count == g_tick_count)
+			{
+				user_tasks[i].current_state = TASK_READY_STATE;
+			}
+		}
+	}
+}
+
+void SysTick_Handler(void)
+{
+	uint32_t *pICSR = (uint32_t*)0xE000ED04;
+
+	update_global_tick_count();
+	unblock_tasks();
+
+	//pend the pendsv exception
+	*pICSR |= (1 << 28);
+
+}
+
+//implement the fault handlers
+void HardFault_Handler(void)
+{
+	printf("Exception : HardFault\n");
+	while(1);
+}
+
+void MemManage_Handler(void)
+{
+	printf("Exception : MemManage\n");
+	while(1);
+}
+
+void BusFault_Handler(void)
+{
+	printf("Exception : BusFault\n");
+	while(1);
+}
+
+/////////////////////////// main.h ///////////////////////////////
+// Some stack memory calculations
+#define SIZE_TASK_STACK		1024U
+#define SIZE_SCHED_STACK	1024U
+
+#define SRAM_START			0x20000000U
+#define	SIZE_SRAM			((128) * (1024))
+#define SRAM_END			((SRAM_START) + (SIZE_SRAM))
+
+#define T1_STACK_START		SRAM_END
+#define T2_STACK_START		((SRAM_END) - (1 * SIZE_TASK_STACK))
+#define T3_STACK_START		((SRAM_END) - (2 * SIZE_TASK_STACK))
+#define T4_STACK_START		((SRAM_END) - (3 * SIZE_TASK_STACK))
+#define IDLE_STACK_START	((SRAM_END) - (4 * SIZE_TASK_STACK))
+#define SCHED_STACK_START	((SRAM_END) - (5 * SIZE_TASK_STACK))
+
+#define TICK_HZ				1000u
+
+#define HSI_CLK				16000000U
+#define SYSTICK_TIM_CLK		HSI_CLK
+
+#define MAX_TASKS			5
+
+#define DUMMY_XPSR 			0x01000000U
+
+#define TASK_READY_STATE 	0x00
+#define TASK_BLOCKED_STATE	0xFF
+
+//PRIMASK register (priority mask register)
+#define INTERRUPT_DISABLE() do{ __asm volatile ("MOV R0, #0x1"); __asm volatile("MSR PRIMASK, R0"); } while(0)
+#define INTERRUPT_ENABLE() do{ __asm volatile ("MOV R0, #0x0"); __asm volatile("MSR PRIMASK, R0"); } while(0)
+
+/////////////////////////// main.log ///////////////////////////////
+
+main.o:     file format elf32-littlearm
+
+Disassembly of section .text:
+
+00000000 <main>:
+   0:	b580      	push	{r7, lr}
+   2:	af00      	add	r7, sp, #0
+   4:	f7ff fffe 	bl	240 <enable_processor_faults>
+   8:	4807      	ldr	r0, [pc, #28]	; (28 <main+0x28>)
+   a:	f7ff fffe 	bl	11c <init_scheduler_stack>
+   e:	f7ff fffe 	bl	126 <init_tasks_stack>
+  12:	f7ff fffe 	bl	0 <led_init_all>
+  16:	f44f 707a 	mov.w	r0, #1000	; 0x3e8
+  1a:	f7ff fffe 	bl	b2 <init_systick_timer>
+  1e:	f7ff fffe 	bl	34c <switch_sp_to_psp>
+  22:	f7ff fffe 	bl	32 <task1_handler>
+  26:	e7fe      	b.n	26 <main+0x26>
+  28:	2001ec00 	andcs	lr, r1, r0, lsl #24
+
+0000002c <idle_task>:
+  2c:	b480      	push	{r7}
+  2e:	af00      	add	r7, sp, #0
+  30:	e7fe      	b.n	30 <idle_task+0x4>
+
+00000032 <task1_handler>:
+  32:	b580      	push	{r7, lr}
+  34:	af00      	add	r7, sp, #0
+  36:	200c      	movs	r0, #12
+  38:	f7ff fffe 	bl	0 <led_on>
+  3c:	f44f 707a 	mov.w	r0, #1000	; 0x3e8
+  40:	f7ff fffe 	bl	38c <task_delay>
+  44:	200c      	movs	r0, #12
+  46:	f7ff fffe 	bl	0 <led_off>
+  4a:	f44f 707a 	mov.w	r0, #1000	; 0x3e8
+  4e:	f7ff fffe 	bl	38c <task_delay>
+  52:	e7f0      	b.n	36 <task1_handler+0x4>
+
+00000054 <task2_handler>:
+  54:	b580      	push	{r7, lr}
+  56:	af00      	add	r7, sp, #0
+  58:	200d      	movs	r0, #13
+  5a:	f7ff fffe 	bl	0 <led_on>
+  5e:	f44f 70fa 	mov.w	r0, #500	; 0x1f4
+  62:	f7ff fffe 	bl	38c <task_delay>
+  66:	200d      	movs	r0, #13
+  68:	f7ff fffe 	bl	0 <led_off>
+  6c:	f44f 70fa 	mov.w	r0, #500	; 0x1f4
+  70:	f7ff fffe 	bl	38c <task_delay>
+  74:	e7f0      	b.n	58 <task2_handler+0x4>
+
+00000076 <task3_handler>:
+  76:	b580      	push	{r7, lr}
+  78:	af00      	add	r7, sp, #0
+  7a:	200f      	movs	r0, #15
+  7c:	f7ff fffe 	bl	0 <led_on>
+  80:	20fa      	movs	r0, #250	; 0xfa
+  82:	f7ff fffe 	bl	38c <task_delay>
+  86:	200f      	movs	r0, #15
+  88:	f7ff fffe 	bl	0 <led_off>
+  8c:	20fa      	movs	r0, #250	; 0xfa
+  8e:	f7ff fffe 	bl	38c <task_delay>
+  92:	e7f2      	b.n	7a <task3_handler+0x4>
+
+00000094 <task4_handler>:
+  94:	b580      	push	{r7, lr}
+  96:	af00      	add	r7, sp, #0
+  98:	200e      	movs	r0, #14
+  9a:	f7ff fffe 	bl	0 <led_on>
+  9e:	207d      	movs	r0, #125	; 0x7d
+  a0:	f7ff fffe 	bl	38c <task_delay>
+  a4:	200e      	movs	r0, #14
+  a6:	f7ff fffe 	bl	0 <led_off>
+  aa:	207d      	movs	r0, #125	; 0x7d
+  ac:	f7ff fffe 	bl	38c <task_delay>
+  b0:	e7f2      	b.n	98 <task4_handler+0x4>
+
+000000b2 <init_systick_timer>:
+  b2:	b480      	push	{r7}
+  b4:	b087      	sub	sp, #28
+  b6:	af00      	add	r7, sp, #0
+  b8:	6078      	str	r0, [r7, #4]
+  ba:	4b15      	ldr	r3, [pc, #84]	; (110 <init_systick_timer+0x5e>)
+  bc:	617b      	str	r3, [r7, #20]
+  be:	4b15      	ldr	r3, [pc, #84]	; (114 <init_systick_timer+0x62>)
+  c0:	613b      	str	r3, [r7, #16]
+  c2:	4a15      	ldr	r2, [pc, #84]	; (118 <init_systick_timer+0x66>)
+  c4:	687b      	ldr	r3, [r7, #4]
+  c6:	fbb2 f3f3 	udiv	r3, r2, r3
+  ca:	3b01      	subs	r3, #1
+  cc:	60fb      	str	r3, [r7, #12]
+  ce:	697b      	ldr	r3, [r7, #20]
+  d0:	2200      	movs	r2, #0
+  d2:	601a      	str	r2, [r3, #0]
+  d4:	697b      	ldr	r3, [r7, #20]
+  d6:	681a      	ldr	r2, [r3, #0]
+  d8:	68fb      	ldr	r3, [r7, #12]
+  da:	431a      	orrs	r2, r3
+  dc:	697b      	ldr	r3, [r7, #20]
+  de:	601a      	str	r2, [r3, #0]
+  e0:	693b      	ldr	r3, [r7, #16]
+  e2:	681b      	ldr	r3, [r3, #0]
+  e4:	f043 0202 	orr.w	r2, r3, #2
+  e8:	693b      	ldr	r3, [r7, #16]
+  ea:	601a      	str	r2, [r3, #0]
+  ec:	693b      	ldr	r3, [r7, #16]
+  ee:	681b      	ldr	r3, [r3, #0]
+  f0:	f043 0204 	orr.w	r2, r3, #4
+  f4:	693b      	ldr	r3, [r7, #16]
+  f6:	601a      	str	r2, [r3, #0]
+  f8:	693b      	ldr	r3, [r7, #16]
+  fa:	681b      	ldr	r3, [r3, #0]
+  fc:	f043 0201 	orr.w	r2, r3, #1
+ 100:	693b      	ldr	r3, [r7, #16]
+ 102:	601a      	str	r2, [r3, #0]
+ 104:	bf00      	nop
+ 106:	371c      	adds	r7, #28
+ 108:	46bd      	mov	sp, r7
+ 10a:	bc80      	pop	{r7}
+ 10c:	4770      	bx	lr
+ 10e:	bf00      	nop
+ 110:	e000e014 	and	lr, r0, r4, lsl r0
+ 114:	e000e010 	and	lr, r0, r0, lsl r0
+ 118:	00f42400 	rscseq	r2, r4, r0, lsl #8
+
+0000011c <init_scheduler_stack>:
+ 11c:	4603      	mov	r3, r0
+ 11e:	f383 8808 	msr	MSP, r3
+ 122:	4770      	bx	lr
+ 124:	bf00      	nop
+
+00000126 <init_tasks_stack>:
+ 126:	b480      	push	{r7}
+ 128:	b085      	sub	sp, #20
+ 12a:	af00      	add	r7, sp, #0
+ 12c:	4b39      	ldr	r3, [pc, #228]	; (214 <init_tasks_stack+0xee>)
+ 12e:	2200      	movs	r2, #0
+ 130:	721a      	strb	r2, [r3, #8]
+ 132:	4b38      	ldr	r3, [pc, #224]	; (214 <init_tasks_stack+0xee>)
+ 134:	2200      	movs	r2, #0
+ 136:	761a      	strb	r2, [r3, #24]
+ 138:	4b36      	ldr	r3, [pc, #216]	; (214 <init_tasks_stack+0xee>)
+ 13a:	2200      	movs	r2, #0
+ 13c:	f883 2028 	strb.w	r2, [r3, #40]	; 0x28
+ 140:	4b34      	ldr	r3, [pc, #208]	; (214 <init_tasks_stack+0xee>)
+ 142:	2200      	movs	r2, #0
+ 144:	f883 2038 	strb.w	r2, [r3, #56]	; 0x38
+ 148:	4b32      	ldr	r3, [pc, #200]	; (214 <init_tasks_stack+0xee>)
+ 14a:	2200      	movs	r2, #0
+ 14c:	f883 2048 	strb.w	r2, [r3, #72]	; 0x48
+ 150:	4b30      	ldr	r3, [pc, #192]	; (214 <init_tasks_stack+0xee>)
+ 152:	4a31      	ldr	r2, [pc, #196]	; (218 <init_tasks_stack+0xf2>)
+ 154:	601a      	str	r2, [r3, #0]
+ 156:	4b2f      	ldr	r3, [pc, #188]	; (214 <init_tasks_stack+0xee>)
+ 158:	4a30      	ldr	r2, [pc, #192]	; (21c <init_tasks_stack+0xf6>)
+ 15a:	611a      	str	r2, [r3, #16]
+ 15c:	4b2d      	ldr	r3, [pc, #180]	; (214 <init_tasks_stack+0xee>)
+ 15e:	4a30      	ldr	r2, [pc, #192]	; (220 <init_tasks_stack+0xfa>)
+ 160:	621a      	str	r2, [r3, #32]
+ 162:	4b2c      	ldr	r3, [pc, #176]	; (214 <init_tasks_stack+0xee>)
+ 164:	4a2f      	ldr	r2, [pc, #188]	; (224 <init_tasks_stack+0xfe>)
+ 166:	631a      	str	r2, [r3, #48]	; 0x30
+ 168:	4b2a      	ldr	r3, [pc, #168]	; (214 <init_tasks_stack+0xee>)
+ 16a:	4a2f      	ldr	r2, [pc, #188]	; (228 <init_tasks_stack+0x102>)
+ 16c:	641a      	str	r2, [r3, #64]	; 0x40
+ 16e:	4b29      	ldr	r3, [pc, #164]	; (214 <init_tasks_stack+0xee>)
+ 170:	4a2e      	ldr	r2, [pc, #184]	; (22c <init_tasks_stack+0x106>)
+ 172:	60da      	str	r2, [r3, #12]
+ 174:	4b27      	ldr	r3, [pc, #156]	; (214 <init_tasks_stack+0xee>)
+ 176:	4a2e      	ldr	r2, [pc, #184]	; (230 <init_tasks_stack+0x10a>)
+ 178:	61da      	str	r2, [r3, #28]
+ 17a:	4b26      	ldr	r3, [pc, #152]	; (214 <init_tasks_stack+0xee>)
+ 17c:	4a2d      	ldr	r2, [pc, #180]	; (234 <init_tasks_stack+0x10e>)
+ 17e:	62da      	str	r2, [r3, #44]	; 0x2c
+ 180:	4b24      	ldr	r3, [pc, #144]	; (214 <init_tasks_stack+0xee>)
+ 182:	4a2d      	ldr	r2, [pc, #180]	; (238 <init_tasks_stack+0x112>)
+ 184:	63da      	str	r2, [r3, #60]	; 0x3c
+ 186:	4b23      	ldr	r3, [pc, #140]	; (214 <init_tasks_stack+0xee>)
+ 188:	4a2c      	ldr	r2, [pc, #176]	; (23c <init_tasks_stack+0x116>)
+ 18a:	64da      	str	r2, [r3, #76]	; 0x4c
+ 18c:	2300      	movs	r3, #0
+ 18e:	60bb      	str	r3, [r7, #8]
+ 190:	e037      	b.n	202 <init_tasks_stack+0xdc>
+ 192:	4a20      	ldr	r2, [pc, #128]	; (214 <init_tasks_stack+0xee>)
+ 194:	68bb      	ldr	r3, [r7, #8]
+ 196:	011b      	lsls	r3, r3, #4
+ 198:	4413      	add	r3, r2
+ 19a:	681b      	ldr	r3, [r3, #0]
+ 19c:	60fb      	str	r3, [r7, #12]
+ 19e:	68fb      	ldr	r3, [r7, #12]
+ 1a0:	3b04      	subs	r3, #4
+ 1a2:	60fb      	str	r3, [r7, #12]
+ 1a4:	68fb      	ldr	r3, [r7, #12]
+ 1a6:	f04f 7280 	mov.w	r2, #16777216	; 0x1000000
+ 1aa:	601a      	str	r2, [r3, #0]
+ 1ac:	68fb      	ldr	r3, [r7, #12]
+ 1ae:	3b04      	subs	r3, #4
+ 1b0:	60fb      	str	r3, [r7, #12]
+ 1b2:	4a18      	ldr	r2, [pc, #96]	; (214 <init_tasks_stack+0xee>)
+ 1b4:	68bb      	ldr	r3, [r7, #8]
+ 1b6:	011b      	lsls	r3, r3, #4
+ 1b8:	4413      	add	r3, r2
+ 1ba:	330c      	adds	r3, #12
+ 1bc:	681b      	ldr	r3, [r3, #0]
+ 1be:	461a      	mov	r2, r3
+ 1c0:	68fb      	ldr	r3, [r7, #12]
+ 1c2:	601a      	str	r2, [r3, #0]
+ 1c4:	68fb      	ldr	r3, [r7, #12]
+ 1c6:	3b04      	subs	r3, #4
+ 1c8:	60fb      	str	r3, [r7, #12]
+ 1ca:	68fb      	ldr	r3, [r7, #12]
+ 1cc:	f06f 0202 	mvn.w	r2, #2
+ 1d0:	601a      	str	r2, [r3, #0]
+ 1d2:	2300      	movs	r3, #0
+ 1d4:	607b      	str	r3, [r7, #4]
+ 1d6:	e008      	b.n	1ea <init_tasks_stack+0xc4>
+ 1d8:	68fb      	ldr	r3, [r7, #12]
+ 1da:	3b04      	subs	r3, #4
+ 1dc:	60fb      	str	r3, [r7, #12]
+ 1de:	68fb      	ldr	r3, [r7, #12]
+ 1e0:	2200      	movs	r2, #0
+ 1e2:	601a      	str	r2, [r3, #0]
+ 1e4:	687b      	ldr	r3, [r7, #4]
+ 1e6:	3301      	adds	r3, #1
+ 1e8:	607b      	str	r3, [r7, #4]
+ 1ea:	687b      	ldr	r3, [r7, #4]
+ 1ec:	2b0c      	cmp	r3, #12
+ 1ee:	ddf3      	ble.n	1d8 <init_tasks_stack+0xb2>
+ 1f0:	68fa      	ldr	r2, [r7, #12]
+ 1f2:	4908      	ldr	r1, [pc, #32]	; (214 <init_tasks_stack+0xee>)
+ 1f4:	68bb      	ldr	r3, [r7, #8]
+ 1f6:	011b      	lsls	r3, r3, #4
+ 1f8:	440b      	add	r3, r1
+ 1fa:	601a      	str	r2, [r3, #0]
+ 1fc:	68bb      	ldr	r3, [r7, #8]
+ 1fe:	3301      	adds	r3, #1
+ 200:	60bb      	str	r3, [r7, #8]
+ 202:	68bb      	ldr	r3, [r7, #8]
+ 204:	2b04      	cmp	r3, #4
+ 206:	ddc4      	ble.n	192 <init_tasks_stack+0x6c>
+ 208:	bf00      	nop
+ 20a:	bf00      	nop
+ 20c:	3714      	adds	r7, #20
+ 20e:	46bd      	mov	sp, r7
+ 210:	bc80      	pop	{r7}
+ 212:	4770      	bx	lr
+ 214:	00000000 	andeq	r0, r0, r0
+ 218:	2001f000 	andcs	pc, r1, r0
+ 21c:	20020000 	andcs	r0, r2, r0
+ 220:	2001fc00 	andcs	pc, r1, r0, lsl #24
+ 224:	2001f800 	andcs	pc, r1, r0, lsl #16
+ 228:	2001f400 	andcs	pc, r1, r0, lsl #8
+	...
+
+00000240 <enable_processor_faults>:
+ 240:	b480      	push	{r7}
+ 242:	b083      	sub	sp, #12
+ 244:	af00      	add	r7, sp, #0
+ 246:	4b0c      	ldr	r3, [pc, #48]	; (278 <enable_processor_faults+0x38>)
+ 248:	607b      	str	r3, [r7, #4]
+ 24a:	687b      	ldr	r3, [r7, #4]
+ 24c:	681b      	ldr	r3, [r3, #0]
+ 24e:	f443 3280 	orr.w	r2, r3, #65536	; 0x10000
+ 252:	687b      	ldr	r3, [r7, #4]
+ 254:	601a      	str	r2, [r3, #0]
+ 256:	687b      	ldr	r3, [r7, #4]
+ 258:	681b      	ldr	r3, [r3, #0]
+ 25a:	f443 3200 	orr.w	r2, r3, #131072	; 0x20000
+ 25e:	687b      	ldr	r3, [r7, #4]
+ 260:	601a      	str	r2, [r3, #0]
+ 262:	687b      	ldr	r3, [r7, #4]
+ 264:	681b      	ldr	r3, [r3, #0]
+ 266:	f443 2280 	orr.w	r2, r3, #262144	; 0x40000
+ 26a:	687b      	ldr	r3, [r7, #4]
+ 26c:	601a      	str	r2, [r3, #0]
+ 26e:	bf00      	nop
+ 270:	370c      	adds	r7, #12
+ 272:	46bd      	mov	sp, r7
+ 274:	bc80      	pop	{r7}
+ 276:	4770      	bx	lr
+ 278:	e000ed24 	and	lr, r0, r4, lsr #26
+
+0000027c <get_psp_value>:
+ 27c:	b480      	push	{r7}
+ 27e:	af00      	add	r7, sp, #0
+ 280:	4b04      	ldr	r3, [pc, #16]	; (294 <get_psp_value+0x18>)
+ 282:	781b      	ldrb	r3, [r3, #0]
+ 284:	4a04      	ldr	r2, [pc, #16]	; (298 <get_psp_value+0x1c>)
+ 286:	011b      	lsls	r3, r3, #4
+ 288:	4413      	add	r3, r2
+ 28a:	681b      	ldr	r3, [r3, #0]
+ 28c:	4618      	mov	r0, r3
+ 28e:	46bd      	mov	sp, r7
+ 290:	bc80      	pop	{r7}
+ 292:	4770      	bx	lr
+	...
+
+0000029c <save_psp_value>:
+ 29c:	b480      	push	{r7}
+ 29e:	b083      	sub	sp, #12
+ 2a0:	af00      	add	r7, sp, #0
+ 2a2:	6078      	str	r0, [r7, #4]
+ 2a4:	4b05      	ldr	r3, [pc, #20]	; (2bc <save_psp_value+0x20>)
+ 2a6:	781b      	ldrb	r3, [r3, #0]
+ 2a8:	4a05      	ldr	r2, [pc, #20]	; (2c0 <save_psp_value+0x24>)
+ 2aa:	011b      	lsls	r3, r3, #4
+ 2ac:	4413      	add	r3, r2
+ 2ae:	687a      	ldr	r2, [r7, #4]
+ 2b0:	601a      	str	r2, [r3, #0]
+ 2b2:	bf00      	nop
+ 2b4:	370c      	adds	r7, #12
+ 2b6:	46bd      	mov	sp, r7
+ 2b8:	bc80      	pop	{r7}
+ 2ba:	4770      	bx	lr
+	...
+
+000002c4 <update_next_task>:
+ 2c4:	b480      	push	{r7}
+ 2c6:	b083      	sub	sp, #12
+ 2c8:	af00      	add	r7, sp, #0
+ 2ca:	23ff      	movs	r3, #255	; 0xff
+ 2cc:	607b      	str	r3, [r7, #4]
+ 2ce:	2300      	movs	r3, #0
+ 2d0:	603b      	str	r3, [r7, #0]
+ 2d2:	e024      	b.n	31e <update_next_task+0x5a>
+ 2d4:	4b1a      	ldr	r3, [pc, #104]	; (340 <update_next_task+0x7c>)
+ 2d6:	781b      	ldrb	r3, [r3, #0]
+ 2d8:	3301      	adds	r3, #1
+ 2da:	b2da      	uxtb	r2, r3
+ 2dc:	4b18      	ldr	r3, [pc, #96]	; (340 <update_next_task+0x7c>)
+ 2de:	701a      	strb	r2, [r3, #0]
+ 2e0:	4b17      	ldr	r3, [pc, #92]	; (340 <update_next_task+0x7c>)
+ 2e2:	781a      	ldrb	r2, [r3, #0]
+ 2e4:	4b17      	ldr	r3, [pc, #92]	; (344 <update_next_task+0x80>)
+ 2e6:	fba3 1302 	umull	r1, r3, r3, r2
+ 2ea:	0899      	lsrs	r1, r3, #2
+ 2ec:	460b      	mov	r3, r1
+ 2ee:	009b      	lsls	r3, r3, #2
+ 2f0:	440b      	add	r3, r1
+ 2f2:	1ad3      	subs	r3, r2, r3
+ 2f4:	b2da      	uxtb	r2, r3
+ 2f6:	4b12      	ldr	r3, [pc, #72]	; (340 <update_next_task+0x7c>)
+ 2f8:	701a      	strb	r2, [r3, #0]
+ 2fa:	4b11      	ldr	r3, [pc, #68]	; (340 <update_next_task+0x7c>)
+ 2fc:	781b      	ldrb	r3, [r3, #0]
+ 2fe:	4a12      	ldr	r2, [pc, #72]	; (348 <update_next_task+0x84>)
+ 300:	011b      	lsls	r3, r3, #4
+ 302:	4413      	add	r3, r2
+ 304:	3308      	adds	r3, #8
+ 306:	781b      	ldrb	r3, [r3, #0]
+ 308:	607b      	str	r3, [r7, #4]
+ 30a:	687b      	ldr	r3, [r7, #4]
+ 30c:	2b00      	cmp	r3, #0
+ 30e:	d103      	bne.n	318 <update_next_task+0x54>
+ 310:	4b0b      	ldr	r3, [pc, #44]	; (340 <update_next_task+0x7c>)
+ 312:	781b      	ldrb	r3, [r3, #0]
+ 314:	2b00      	cmp	r3, #0
+ 316:	d106      	bne.n	326 <update_next_task+0x62>
+ 318:	683b      	ldr	r3, [r7, #0]
+ 31a:	3301      	adds	r3, #1
+ 31c:	603b      	str	r3, [r7, #0]
+ 31e:	683b      	ldr	r3, [r7, #0]
+ 320:	2b04      	cmp	r3, #4
+ 322:	ddd7      	ble.n	2d4 <update_next_task+0x10>
+ 324:	e000      	b.n	328 <update_next_task+0x64>
+ 326:	bf00      	nop
+ 328:	687b      	ldr	r3, [r7, #4]
+ 32a:	2b00      	cmp	r3, #0
+ 32c:	d002      	beq.n	334 <update_next_task+0x70>
+ 32e:	4b04      	ldr	r3, [pc, #16]	; (340 <update_next_task+0x7c>)
+ 330:	2200      	movs	r2, #0
+ 332:	701a      	strb	r2, [r3, #0]
+ 334:	bf00      	nop
+ 336:	370c      	adds	r7, #12
+ 338:	46bd      	mov	sp, r7
+ 33a:	bc80      	pop	{r7}
+ 33c:	4770      	bx	lr
+ 33e:	bf00      	nop
+ 340:	00000000 	andeq	r0, r0, r0
+ 344:	cccccccd 	stclgt	12, cr12, [ip], {205}	; 0xcd
+ 348:	00000000 	andeq	r0, r0, r0
+
+0000034c <switch_sp_to_psp>:
+ 34c:	b500      	push	{lr}
+ 34e:	f7ff fffe 	bl	27c <get_psp_value>
+ 352:	f380 8809 	msr	PSP, r0
+ 356:	f85d eb04 	ldr.w	lr, [sp], #4
+ 35a:	f04f 0002 	mov.w	r0, #2
+ 35e:	f380 8814 	msr	CONTROL, r0
+ 362:	4770      	bx	lr
+ 364:	bf00      	nop
+
+00000366 <schedule>:
+ 366:	b480      	push	{r7}
+ 368:	b083      	sub	sp, #12
+ 36a:	af00      	add	r7, sp, #0
+ 36c:	4b06      	ldr	r3, [pc, #24]	; (388 <schedule+0x22>)
+ 36e:	607b      	str	r3, [r7, #4]
+ 370:	687b      	ldr	r3, [r7, #4]
+ 372:	681b      	ldr	r3, [r3, #0]
+ 374:	f043 5280 	orr.w	r2, r3, #268435456	; 0x10000000
+ 378:	687b      	ldr	r3, [r7, #4]
+ 37a:	601a      	str	r2, [r3, #0]
+ 37c:	bf00      	nop
+ 37e:	370c      	adds	r7, #12
+ 380:	46bd      	mov	sp, r7
+ 382:	bc80      	pop	{r7}
+ 384:	4770      	bx	lr
+ 386:	bf00      	nop
+ 388:	e000ed04 	and	lr, r0, r4, lsl #26
+
+0000038c <task_delay>:
+ 38c:	b580      	push	{r7, lr}
+ 38e:	b082      	sub	sp, #8
+ 390:	af00      	add	r7, sp, #0
+ 392:	6078      	str	r0, [r7, #4]
+ 394:	f04f 0001 	mov.w	r0, #1
+ 398:	f380 8810 	msr	PRIMASK, r0
+ 39c:	4b10      	ldr	r3, [pc, #64]	; (3e0 <task_delay+0x54>)
+ 39e:	781b      	ldrb	r3, [r3, #0]
+ 3a0:	2b00      	cmp	r3, #0
+ 3a2:	d015      	beq.n	3d0 <task_delay+0x44>
+ 3a4:	4b0f      	ldr	r3, [pc, #60]	; (3e4 <task_delay+0x58>)
+ 3a6:	681a      	ldr	r2, [r3, #0]
+ 3a8:	4b0d      	ldr	r3, [pc, #52]	; (3e0 <task_delay+0x54>)
+ 3aa:	781b      	ldrb	r3, [r3, #0]
+ 3ac:	4618      	mov	r0, r3
+ 3ae:	687b      	ldr	r3, [r7, #4]
+ 3b0:	441a      	add	r2, r3
+ 3b2:	490d      	ldr	r1, [pc, #52]	; (3e8 <task_delay+0x5c>)
+ 3b4:	0103      	lsls	r3, r0, #4
+ 3b6:	440b      	add	r3, r1
+ 3b8:	3304      	adds	r3, #4
+ 3ba:	601a      	str	r2, [r3, #0]
+ 3bc:	4b08      	ldr	r3, [pc, #32]	; (3e0 <task_delay+0x54>)
+ 3be:	781b      	ldrb	r3, [r3, #0]
+ 3c0:	4a09      	ldr	r2, [pc, #36]	; (3e8 <task_delay+0x5c>)
+ 3c2:	011b      	lsls	r3, r3, #4
+ 3c4:	4413      	add	r3, r2
+ 3c6:	3308      	adds	r3, #8
+ 3c8:	22ff      	movs	r2, #255	; 0xff
+ 3ca:	701a      	strb	r2, [r3, #0]
+ 3cc:	f7ff fffe 	bl	366 <schedule>
+ 3d0:	f04f 0000 	mov.w	r0, #0
+ 3d4:	f380 8810 	msr	PRIMASK, r0
+ 3d8:	bf00      	nop
+ 3da:	3708      	adds	r7, #8
+ 3dc:	46bd      	mov	sp, r7
+ 3de:	bd80      	pop	{r7, pc}
+	...
+
+000003ec <PendSV_Handler>:
+ 3ec:	f3ef 8009 	mrs	r0, PSP
+ 3f0:	e920 0ff0 	stmdb	r0!, {r4, r5, r6, r7, r8, r9, sl, fp}
+ 3f4:	b500      	push	{lr}
+ 3f6:	f7ff fffe 	bl	29c <save_psp_value>
+ 3fa:	f7ff fffe 	bl	2c4 <update_next_task>
+ 3fe:	f7ff fffe 	bl	27c <get_psp_value>
+ 402:	e8b0 0ff0 	ldmia.w	r0!, {r4, r5, r6, r7, r8, r9, sl, fp}
+ 406:	f380 8809 	msr	PSP, r0
+ 40a:	f85d eb04 	ldr.w	lr, [sp], #4
+ 40e:	4770      	bx	lr
+ 410:	bf00      	nop
+
+00000412 <update_global_tick_count>:
+ 412:	b480      	push	{r7}
+ 414:	af00      	add	r7, sp, #0
+ 416:	4b04      	ldr	r3, [pc, #16]	; (428 <update_global_tick_count+0x16>)
+ 418:	681b      	ldr	r3, [r3, #0]
+ 41a:	3301      	adds	r3, #1
+ 41c:	4a02      	ldr	r2, [pc, #8]	; (428 <update_global_tick_count+0x16>)
+ 41e:	6013      	str	r3, [r2, #0]
+ 420:	bf00      	nop
+ 422:	46bd      	mov	sp, r7
+ 424:	bc80      	pop	{r7}
+ 426:	4770      	bx	lr
+ 428:	00000000 	andeq	r0, r0, r0
+
+0000042c <unblock_tasks>:
+ 42c:	b480      	push	{r7}
+ 42e:	b083      	sub	sp, #12
+ 430:	af00      	add	r7, sp, #0
+ 432:	2301      	movs	r3, #1
+ 434:	607b      	str	r3, [r7, #4]
+ 436:	e01b      	b.n	470 <unblock_tasks+0x44>
+ 438:	4a12      	ldr	r2, [pc, #72]	; (484 <unblock_tasks+0x58>)
+ 43a:	687b      	ldr	r3, [r7, #4]
+ 43c:	011b      	lsls	r3, r3, #4
+ 43e:	4413      	add	r3, r2
+ 440:	3308      	adds	r3, #8
+ 442:	781b      	ldrb	r3, [r3, #0]
+ 444:	2b00      	cmp	r3, #0
+ 446:	d010      	beq.n	46a <unblock_tasks+0x3e>
+ 448:	4a0e      	ldr	r2, [pc, #56]	; (484 <unblock_tasks+0x58>)
+ 44a:	687b      	ldr	r3, [r7, #4]
+ 44c:	011b      	lsls	r3, r3, #4
+ 44e:	4413      	add	r3, r2
+ 450:	3304      	adds	r3, #4
+ 452:	681a      	ldr	r2, [r3, #0]
+ 454:	4b0c      	ldr	r3, [pc, #48]	; (488 <unblock_tasks+0x5c>)
+ 456:	681b      	ldr	r3, [r3, #0]
+ 458:	429a      	cmp	r2, r3
+ 45a:	d106      	bne.n	46a <unblock_tasks+0x3e>
+ 45c:	4a09      	ldr	r2, [pc, #36]	; (484 <unblock_tasks+0x58>)
+ 45e:	687b      	ldr	r3, [r7, #4]
+ 460:	011b      	lsls	r3, r3, #4
+ 462:	4413      	add	r3, r2
+ 464:	3308      	adds	r3, #8
+ 466:	2200      	movs	r2, #0
+ 468:	701a      	strb	r2, [r3, #0]
+ 46a:	687b      	ldr	r3, [r7, #4]
+ 46c:	3301      	adds	r3, #1
+ 46e:	607b      	str	r3, [r7, #4]
+ 470:	687b      	ldr	r3, [r7, #4]
+ 472:	2b04      	cmp	r3, #4
+ 474:	dde0      	ble.n	438 <unblock_tasks+0xc>
+ 476:	bf00      	nop
+ 478:	bf00      	nop
+ 47a:	370c      	adds	r7, #12
+ 47c:	46bd      	mov	sp, r7
+ 47e:	bc80      	pop	{r7}
+ 480:	4770      	bx	lr
+ 482:	bf00      	nop
+	...
+
+0000048c <SysTick_Handler>:
+ 48c:	b580      	push	{r7, lr}
+ 48e:	b082      	sub	sp, #8
+ 490:	af00      	add	r7, sp, #0
+ 492:	4b08      	ldr	r3, [pc, #32]	; (4b4 <SysTick_Handler+0x28>)
+ 494:	607b      	str	r3, [r7, #4]
+ 496:	f7ff fffe 	bl	412 <update_global_tick_count>
+ 49a:	f7ff fffe 	bl	42c <unblock_tasks>
+ 49e:	687b      	ldr	r3, [r7, #4]
+ 4a0:	681b      	ldr	r3, [r3, #0]
+ 4a2:	f043 5280 	orr.w	r2, r3, #268435456	; 0x10000000
+ 4a6:	687b      	ldr	r3, [r7, #4]
+ 4a8:	601a      	str	r2, [r3, #0]
+ 4aa:	bf00      	nop
+ 4ac:	3708      	adds	r7, #8
+ 4ae:	46bd      	mov	sp, r7
+ 4b0:	bd80      	pop	{r7, pc}
+ 4b2:	bf00      	nop
+ 4b4:	e000ed04 	and	lr, r0, r4, lsl #26
+
+000004b8 <HardFault_Handler>:
+ 4b8:	b580      	push	{r7, lr}
+ 4ba:	af00      	add	r7, sp, #0
+ 4bc:	4801      	ldr	r0, [pc, #4]	; (4c4 <HardFault_Handler+0xc>)
+ 4be:	f7ff fffe 	bl	0 <puts>
+ 4c2:	e7fe      	b.n	4c2 <HardFault_Handler+0xa>
+ 4c4:	00000000 	andeq	r0, r0, r0
+
+000004c8 <MemManage_Handler>:
+ 4c8:	b580      	push	{r7, lr}
+ 4ca:	af00      	add	r7, sp, #0
+ 4cc:	4801      	ldr	r0, [pc, #4]	; (4d4 <MemManage_Handler+0xc>)
+ 4ce:	f7ff fffe 	bl	0 <puts>
+ 4d2:	e7fe      	b.n	4d2 <MemManage_Handler+0xa>
+ 4d4:	00000018 	andeq	r0, r0, r8, lsl r0
+
+000004d8 <BusFault_Handler>:
+ 4d8:	b580      	push	{r7, lr}
+ 4da:	af00      	add	r7, sp, #0
+ 4dc:	4801      	ldr	r0, [pc, #4]	; (4e4 <BusFault_Handler+0xc>)
+ 4de:	f7ff fffe 	bl	0 <puts>
+ 4e2:	e7fe      	b.n	4e2 <BusFault_Handler+0xa>
+ 4e4:	00000030 	andeq	r0, r0, r0, lsr r0
+
+Disassembly of section .data:
+
+00000000 <current_task>:
+   0:	Address 0x00000000 is out of bounds.
+
+
+Disassembly of section .bss:
+
+00000000 <g_tick_count>:
+   0:	00000000 	andeq	r0, r0, r0
+
+Disassembly of section .rodata:
+
+00000000 <.rodata>:
+   0:	65637845 	strbvs	r7, [r3, #-2117]!	; 0xfffff7bb
+   4:	6f697470 	svcvs	0x00697470
+   8:	203a206e 	eorscs	r2, sl, lr, rrx
+   c:	64726148 	ldrbtvs	r6, [r2], #-328	; 0xfffffeb8
+  10:	6c756146 	ldfvse	f6, [r5], #-280	; 0xfffffee8
+  14:	00000074 	andeq	r0, r0, r4, ror r0
+  18:	65637845 	strbvs	r7, [r3, #-2117]!	; 0xfffff7bb
+  1c:	6f697470 	svcvs	0x00697470
+  20:	203a206e 	eorscs	r2, sl, lr, rrx
+  24:	4d6d654d 	cfstr64mi	mvdx6, [sp, #-308]!	; 0xfffffecc
+  28:	67616e61 	strbvs	r6, [r1, -r1, ror #28]!
+  2c:	00000065 	andeq	r0, r0, r5, rrx
+  30:	65637845 	strbvs	r7, [r3, #-2117]!	; 0xfffff7bb
+  34:	6f697470 	svcvs	0x00697470
+  38:	203a206e 	eorscs	r2, sl, lr, rrx
+  3c:	46737542 	ldrbtmi	r7, [r3], -r2, asr #10
+  40:	746c7561 	strbtvc	r7, [ip], #-1377	; 0xfffffa9f
+	...
+
+Disassembly of section .comment:
+
+00000000 <.comment>:
+   0:	43434700 	movtmi	r4, #14080	; 0x3700
+   4:	4728203a 			; <UNDEFINED> instruction: 0x4728203a
+   8:	4120554e 			; <UNDEFINED> instruction: 0x4120554e
+   c:	45206d72 	strmi	r6, [r0, #-3442]!	; 0xfffff28e
+  10:	6465626d 	strbtvs	r6, [r5], #-621	; 0xfffffd93
+  14:	20646564 	rsbcs	r6, r4, r4, ror #10
+  18:	6c6f6f54 	stclvs	15, cr6, [pc], #-336	; fffffed0 <BusFault_Handler+0xfffff9f8>
+  1c:	69616863 	stmdbvs	r1!, {r0, r1, r5, r6, fp, sp, lr}^
+  20:	2d39206e 	ldccs	0, cr2, [r9, #-440]!	; 0xfffffe48
+  24:	30323032 	eorscc	r3, r2, r2, lsr r0
+  28:	2d32712d 	ldfcss	f7, [r2, #-180]!	; 0xffffff4c
+  2c:	61647075 	smcvs	18181	; 0x4705
+  30:	20296574 	eorcs	r6, r9, r4, ror r5
+  34:	2e332e39 	mrccs	14, 1, r2, cr3, cr9, {1}
+  38:	30322031 	eorscc	r2, r2, r1, lsr r0
+  3c:	34303032 	ldrtcc	r3, [r0], #-50	; 0xffffffce
+  40:	28203830 	stmdacs	r0!, {r4, r5, fp, ip, sp}
+  44:	656c6572 	strbvs	r6, [ip, #-1394]!	; 0xfffffa8e
+  48:	29657361 	stmdbcs	r5!, {r0, r5, r6, r8, r9, ip, sp, lr}^
+	...
+
+Disassembly of section .ARM.attributes:
+
+00000000 <.ARM.attributes>:
+   0:	00002d41 	andeq	r2, r0, r1, asr #26
+   4:	61656100 	cmnvs	r5, r0, lsl #2
+   8:	01006962 	tsteq	r0, r2, ror #18
+   c:	00000023 	andeq	r0, r0, r3, lsr #32
+  10:	2d453705 	stclcs	7, cr3, [r5, #-20]	; 0xffffffec
+  14:	0d06004d 	stceq	0, cr0, [r6, #-308]	; 0xfffffecc
+  18:	02094d07 	andeq	r4, r9, #448	; 0x1c0
+  1c:	01140412 	tsteq	r4, r2, lsl r4
+  20:	03170115 	tsteq	r7, #1073741829	; 0x40000005
+  24:	01190118 	tsteq	r9, r8, lsl r1
+  28:	061e011a 			; <UNDEFINED> instruction: 0x061e011a
+  2c:	Address 0x0000002c is out of bounds.
+
+/////////////////////////// Makefile.mk ///////////////////////////////
+CC=arm-none-eabi-gcc
+MACH=cortex-m4
+CFLAGS= -c -mcpu=$(MACH) -mthumb -mfloat-abi=soft -std=gnu11 -Wall -O0
+#LDFLAGS= -mcpu=$(MACH) -mthumb -mfloat-abi=soft --specs=nano.specs -T stm32_ls.ld -Wl,-Map=final.map
+LDFLAGS_SH= -mcpu=$(MACH) -mthumb -mfloat-abi=soft --specs=rdimon.specs -T stm32_ls.ld -Wl,-Map=final.map
+
+all:main.o led.o stm32_startup.o syscalls.o final.elf
+
+semi:main.o led.o stm32_startup.o syscalls.o final_sh.elf
+
+main.o:main.c
+	$(CC) $(CFLAGS) -o $@ $^
+	
+led.o:led.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+stm32_startup.o:stm32_startup.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+syscalls.o:syscalls.c
+	$(CC) $(CFLAGS) -o $@ $^
+	
+final.elf: main.o led.o stm32_startup.o	syscalls.o
+	$(CC) $(LDFLAGS) -o $@ $^
+	
+final_sh.elf: main.o led.o stm32_startup.o
+	$(CC) $(LDFLAGS_SH) -o $@ $^
+	
+clean:
+	del *.o *.elf
+	
+load:
+	openocd -f board/st_nucleo_f4.cfg
+	
+/////////////////////////// openocd.txt ///////////////////////////////
+Debug: 17 9 log.c:251 handle_log_output_command(): set log_output to "openocd.log"
+Debug: 18 9 options.c:244 add_default_dirs(): bindir=bin
+Debug: 19 9 options.c:245 add_default_dirs(): pkgdatadir=
+Debug: 20 9 options.c:246 add_default_dirs(): exepath=C:/xpack-openocd-0.10.0-15/bin
+Debug: 21 9 options.c:247 add_default_dirs(): bin2data=../
+Debug: 22 9 configuration.c:42 add_script_search_dir(): adding C:/Users/Oliver/AppData/Roaming/OpenOCD
+Debug: 23 9 configuration.c:42 add_script_search_dir(): adding C:\Users\Oliver\AppData\Roaming\SPB_16.6/.config/openocd
+Debug: 24 9 configuration.c:42 add_script_search_dir(): adding C:\Users\Oliver\AppData\Roaming\SPB_16.6/.openocd
+Debug: 25 9 configuration.c:42 add_script_search_dir(): adding C:/xpack-openocd-0.10.0-15/bin/..//site
+Debug: 26 9 configuration.c:42 add_script_search_dir(): adding C:/xpack-openocd-0.10.0-15/bin/..//scripts
+User : 27 10 command.c:692 command_run_line(): embedded:startup.tcl:26: Error: Can't find openocd.cfg
+in procedure 'script' 
+at file "embedded:startup.tcl", line 26
+Info : 28 11 server.c:310 add_service(): Listening on port 6666 for tcl connections
+Info : 29 11 server.c:310 add_service(): Listening on port 4444 for telnet connections
+Debug: 30 11 command.c:146 script_debug(): command - init
+Debug: 32 11 command.c:146 script_debug(): command - target init
+Debug: 34 11 command.c:146 script_debug(): command - target names
+Debug: 35 11 target.c:1458 handle_target_init_command(): Initializing targets...
+Error: 36 11 core.c:1524 adapter_init(): Debug Adapter has to be specified, see "adapter driver" command
+Debug: 37 11 command.c:626 run_command(): Command 'init' failed with error code -101
+User : 38 11 command.c:692 command_run_line(): embedded:startup.tcl:26: Error: 
+in procedure 'script' 
+at file "embedded:startup.tcl", line 26
+
+
+	
+/////////////////////////// stm32_ls.ld ///////////////////////////////
+ENTRY(Reset_Handler)
+
+MEMORY
+{
+	FLASH(rx):ORIGIN =0x08000000,LENGTH =512K
+	SRAM(rwx):ORIGIN =0x20000000,LENGTH =128K
+}
+
+SECTIONS
+{
+	.text :
+	{
+		*(.isr_vector)
+		*(.text)
+		*(.text.*)
+		*(.init)
+		*(.fini)
+		*(.rodata)
+		*(.rodata.*)
+		. = ALIGN(4);
+		_etext = .;
+	}> FLASH 
+	
+	_la_data = LOADADDR(.data);
+	
+	.data :
+	{
+		_sdata = .;
+		*(.data)
+		*(.data.*)
+		. = ALIGN(4);
+		_edata = .;
+	}> SRAM AT> FLASH
+	
+	.bss :
+	{
+		_sbss = .;
+		__bss_start__ = _sbss;
+		*(.bss)
+		*(.bss.*)
+		*(COMMON)
+		. = ALIGN(4);
+		_ebss = .;
+		__bss_end__ = _ebss;
+		. = ALIGN(4);
+		end = .;
+		__end__ = .;
+	}> SRAM
+}
+
+
+
+/////////////////////////// stm32_startup.c ///////////////////////////
+#include <stdint.h>
+
+#define SRAM_START 		0x20000000U
+#define SRAM_SIZE		(128U * 1024U) //128KB
+#define SRAM_END		((SRAM_START) + (SRAM_SIZE))
+
+#define STACK_START		SRAM_END
+
+extern uint32_t _etext;
+extern uint32_t _sdata;
+extern uint32_t _edata;1
+extern uint32_t _la_data;
+extern uint32_t _sbss;
+extern uint32_t _ebss;
+
+//prototype of main
+int main(void);
+
+//prototype of c std library initialization
+void __libc_init_array(void);
+
+/* function prototypes of STM32F446RE system exception and IRQ handlers */
+void Reset_Handler(void);
+
+void NMI_Handler 					(void) __attribute__ ((weak, alias("Default_Handler")));
+void HardFault_Handler 				(void) __attribute__ ((weak, alias("Default_Handler")));
+void MemManage_Handler 				(void) __attribute__ ((weak, alias("Default_Handler")));
+void BusFault_Handler 				(void) __attribute__ ((weak, alias("Default_Handler")));
+void UsageFault_Handler 			(void) __attribute__ ((weak, alias("Default_Handler")));
+void SVC_Handler 					(void) __attribute__ ((weak, alias("Default_Handler")));
+void DebugMon_Handler 				(void) __attribute__ ((weak, alias("Default_Handler")));
+void PendSV_Handler   				(void) __attribute__ ((weak, alias("Default_Handler")));
+void SysTick_Handler  				(void) __attribute__ ((weak, alias("Default_Handler")));
+void WWDG_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));
+void PVD_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));             
+void TAMP_STAMP_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));      
+void RTC_WKUP_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));
+void FLASH_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));                               
+void RCC_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));             
+void EXTI0_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));           
+void EXTI1_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));           
+void EXTI2_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));           
+void EXTI3_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));           
+void EXTI4_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));           
+void DMA1_Stream0_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void DMA1_Stream1_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void DMA1_Stream2_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void DMA1_Stream3_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void DMA1_Stream4_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void DMA1_Stream5_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void DMA1_Stream6_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void ADC_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));             
+void CAN1_TX_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void CAN1_RX0_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));        
+void CAN1_RX1_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));        
+void CAN1_SCE_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));        
+void EXTI9_5_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void TIM1_BRK_TIM9_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));   
+void TIM1_UP_TIM10_IRQHandler 		(void) __attribute__ ((weak, alias("Default_Handler")));   
+void TIM1_TRG_COM_TIM11_IRQHandler 	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM1_CC_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void TIM2_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));            
+void TIM3_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));            
+void TIM4_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));            
+void I2C1_EV_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void I2C1_ER_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void I2C2_EV_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void I2C2_ER_IRQHandler 			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void SPI1_IRQHandler  				(void) __attribute__ ((weak, alias("Default_Handler")));           
+void SPI2_IRQHandler 				(void) __attribute__ ((weak, alias("Default_Handler")));            
+void USART1_IRQHandler  			(void) __attribute__ ((weak, alias("Default_Handler")));         
+void USART2_IRQHandler  			(void) __attribute__ ((weak, alias("Default_Handler")));        
+void USART3_IRQHandler   			(void) __attribute__ ((weak, alias("Default_Handler")));        
+void EXTI15_10_IRQHandler   		(void) __attribute__ ((weak, alias("Default_Handler")));     
+void RTC_Alarm_IRQHandler    		(void) __attribute__ ((weak, alias("Default_Handler")));    
+void OTG_FS_WKUP_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler"))); 
+void TIM8_BRK_TIM12_IRQHandler   	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM8_UP_TIM13_IRQHandler    	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM8_TRG_COM_TIM14_IRQHandler 	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM8_CC_IRQHandler          	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA1_Stream7_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void FMC_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void SDIO_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM5_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void SPI3_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void UART4_IRQHandler            	(void) __attribute__ ((weak, alias("Default_Handler")));
+void UART5_IRQHandler            	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM6_DAC_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void TIM7_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream0_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream1_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream2_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream3_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream4_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void CAN2_TX_IRQHandler          	(void) __attribute__ ((weak, alias("Default_Handler")));
+void CAN2_RX0_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void CAN2_RX1_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void CAN2_SCE_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void OTG_FS_IRQHandler           	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream5_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream6_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DMA2_Stream7_IRQHandler     	(void) __attribute__ ((weak, alias("Default_Handler")));
+void USART6_IRQHandler           	(void) __attribute__ ((weak, alias("Default_Handler")));
+void I2C3_EV_IRQHandler          	(void) __attribute__ ((weak, alias("Default_Handler")));
+void I2C3_ER_IRQHandler          	(void) __attribute__ ((weak, alias("Default_Handler")));
+void OTG_HS_EP1_OUT_IRQHandler   	(void) __attribute__ ((weak, alias("Default_Handler")));
+void OTG_HS_EP1_IN_IRQHandler    	(void) __attribute__ ((weak, alias("Default_Handler")));
+void OTG_HS_WKUP_IRQHandler      	(void) __attribute__ ((weak, alias("Default_Handler")));
+void OTG_HS_IRQHandler           	(void) __attribute__ ((weak, alias("Default_Handler")));
+void DCMI_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void FPU_IRQHandler              	(void) __attribute__ ((weak, alias("Default_Handler"))); 
+void SPI4_IRQHandler             	(void) __attribute__ ((weak, alias("Default_Handler")));
+void SAI1_IRQHandler         		(void) __attribute__ ((weak, alias("Default_Handler")));
+void SAI2_IRQHandler         		(void) __attribute__ ((weak, alias("Default_Handler")));
+void QuadSPI_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void HDMI_CEC_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void SPDIF_Rx_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void FMPI2C1_IRQHandler         	(void) __attribute__ ((weak, alias("Default_Handler")));
+void FMPI2C1_error_IRQHandler       (void) __attribute__ ((weak, alias("Default_Handler")));
+
+/* Weak symbol is used to allow the programmer to override this function with same
+function name in main application. There programmer can implement the real
+implementation of handling that exception. */
+
+
+//attribute tells compiler to put this in its own user-defined section rather than .data or .bss
+uint32_t vectors[] __attribute__((section(".isr_vector"))) = {
+	STACK_START,
+	(uint32_t)Reset_Handler,
+	(uint32_t)NMI_Handler,
+	(uint32_t)HardFault_Handler,
+	(uint32_t)MemManage_Handler,
+	(uint32_t)BusFault_Handler,
+	(uint32_t)UsageFault_Handler,
+	0,
+	0,
+	0,
+	0,
+	(uint32_t)SVC_Handler,
+	(uint32_t)DebugMon_Handler,
+	0,
+	(uint32_t)PendSV_Handler,
+	(uint32_t)SysTick_Handler,
+	(uint32_t)WWDG_IRQHandler,              			/* Window Watchdog interrupt                                          */
+	(uint32_t)PVD_IRQHandler,               			/* PVD through EXTI line detection interrupt                          */
+	(uint32_t)TAMP_STAMP_IRQHandler,       				/* Tamper and TimeStamp interrupts through the EXTI line              */
+	(uint32_t)RTC_WKUP_IRQHandler,          			/* RTC Wakeup interrupt through the EXTI line                         */
+	(uint32_t)FLASH_IRQHandler,             			/* Flash global interrupt                                             */
+	(uint32_t)RCC_IRQHandler,               			/* RCC global interrupt                                               */
+	(uint32_t)EXTI0_IRQHandler,             			/* EXTI Line0 interrupt                                               */
+	(uint32_t)EXTI1_IRQHandler,             			/* EXTI Line1 interrupt                                               */
+	(uint32_t)EXTI2_IRQHandler,             			/* EXTI Line2 interrupt                                               */
+	(uint32_t)EXTI3_IRQHandler,             			/* EXTI Line3 interrupt                                               */
+	(uint32_t)EXTI4_IRQHandler,             			/* EXTI Line4 interrupt                                               */
+	(uint32_t)DMA1_Stream0_IRQHandler,      			/* DMA1 Stream0 global interrupt                                      */
+	(uint32_t)DMA1_Stream1_IRQHandler,      			/* DMA1 Stream1 global interrupt                                      */
+	(uint32_t)DMA1_Stream2_IRQHandler,      			/* DMA1 Stream2 global interrupt                                      */
+	(uint32_t)DMA1_Stream3_IRQHandler,      			/* DMA1 Stream3 global interrupt                                      */
+	(uint32_t)DMA1_Stream4_IRQHandler,      			/* DMA1 Stream4 global interrupt                                      */
+	(uint32_t)DMA1_Stream5_IRQHandler,      			/* DMA1 Stream5 global interrupt                                      */
+	(uint32_t)DMA1_Stream6_IRQHandler,      			/* DMA1 Stream6 global interrupt                                      */
+	(uint32_t)ADC_IRQHandler,               			/* ADC1 global interrupt                                              */
+	(uint32_t)CAN1_TX_IRQHandler,           			/* CAN1 TX interrupts                                                 */
+	(uint32_t)CAN1_RX0_IRQHandler,          			/* CAN1 RX0 interrupts                                                */
+	(uint32_t)CAN1_RX1_IRQHandler,          			/* CAN1 RX1 interrupts                                                */
+	(uint32_t)CAN1_SCE_IRQHandler,          			/* CAN1 SCE interrupt                                                 */
+	(uint32_t)EXTI9_5_IRQHandler,           			/* EXTI Line[9:5] interrupts                                          */
+	(uint32_t)TIM1_BRK_TIM9_IRQHandler,     			/* TIM1 Break interrupt and TIM9 global interrupt                     */
+	(uint32_t)TIM1_UP_TIM10_IRQHandler,     			/* TIM1 Update interrupt and TIM10 global interrupt                   */
+	(uint32_t)TIM1_TRG_COM_TIM11_IRQHandler,			/* TIM1 Trigger and Commutation interrupts and TIM11 global interrupt */
+	(uint32_t)TIM1_CC_IRQHandler,           			/* TIM1 Capture Compare interrupt                                     */
+	(uint32_t)TIM2_IRQHandler,              			/* TIM2 global interrupt                                              */
+	(uint32_t)TIM3_IRQHandler,              			/* TIM3 global interrupt                                              */
+	(uint32_t)TIM4_IRQHandler,             				/* TIM4 global interrupt                                              */
+	(uint32_t)I2C1_EV_IRQHandler,           			/* I2C1 event interrupt                                               */
+	(uint32_t)I2C1_ER_IRQHandler,           			/* I2C1 error interrupt                                               */
+	(uint32_t)I2C2_EV_IRQHandler,           			/* I2C2 event interrupt                                               */
+	(uint32_t)I2C2_ER_IRQHandler,           			/* I2C2 error interrupt                                               */
+	(uint32_t)SPI1_IRQHandler,              			/* SPI1 global interrupt                                              */
+	(uint32_t)SPI2_IRQHandler,              			/* SPI2 global interrupt                                              */
+	(uint32_t)USART1_IRQHandler,            			/* USART1 global interrupt                                            */
+	(uint32_t)USART2_IRQHandler,            			/* USART2 global interrupt                                            */
+	(uint32_t)USART3_IRQHandler,            			/* USART3 global interrupt                                            */
+	(uint32_t)EXTI15_10_IRQHandler,         			/* EXTI Line[15:10] interrupts                                        */
+	(uint32_t)RTC_Alarm_IRQHandler,         			/* RTC Alarms (A and B) through EXTI line interrupt                   */
+	(uint32_t)OTG_FS_WKUP_IRQHandler,      				/* USB On-The-Go FS Wakeup through EXTI line interrupt                */
+	(uint32_t)TIM8_BRK_TIM12_IRQHandler,    			/* TIM8 Break interrupt and TIM12 global interrupt                    */
+	(uint32_t)TIM8_UP_TIM13_IRQHandler,     			/* TIM8 Update interrupt and TIM13 global interrupt                   */
+	(uint32_t)TIM8_TRG_COM_TIM14_IRQHandler,			/* TIM8 Trigger and Commutation interrupts and TIM14 global interrupt */
+	(uint32_t)TIM8_CC_IRQHandler,           			/* TIM8 Capture Compare interrupt                                     */
+	(uint32_t)DMA1_Stream7_IRQHandler,      			/* DMA1 Stream7 global interrupt                                      */
+	(uint32_t)FMC_IRQHandler,               			/* FMC global interrupt                                               */
+	(uint32_t)SDIO_IRQHandler,              			/* SDIO global interrupt                                              */
+	(uint32_t)TIM5_IRQHandler,              			/* TIM5 global interrupt                                              */
+	(uint32_t)SPI3_IRQHandler,              			/* SPI3 global interrupt                                              */
+	(uint32_t)UART4_IRQHandler,             			/* UART4 global interrupt                                             */
+	(uint32_t)UART5_IRQHandler,             			/* UART5 global interrupt                                             */
+	(uint32_t)TIM6_DAC_IRQHandler,          			/* TIM6 global interrupt, DAC1 and DAC2 underrun error interrupt      */
+	(uint32_t)TIM7_IRQHandler,              			/* TIM7 global interrupt                                              */
+	(uint32_t)DMA2_Stream0_IRQHandler,      			/* DMA2 Stream0 global interrupt                                      */
+	(uint32_t)DMA2_Stream1_IRQHandler,      			/* DMA2 Stream1 global interrupt                                      */
+	(uint32_t)DMA2_Stream2_IRQHandler,      			/* DMA2 Stream2 global interrupt                                      */
+	(uint32_t)DMA2_Stream3_IRQHandler,      			/* DMA2 Stream3 global interrupt                                      */
+	(uint32_t)DMA2_Stream4_IRQHandler,      			/* DMA2 Stream4 global interrupt                                      */
+	0,                            						/* Reserved                                                           */
+	0,                            						/* Reserved                                                           */
+	(uint32_t)CAN2_TX_IRQHandler,           			/* CAN2 TX interrupts                                                 */
+	(uint32_t)CAN2_RX0_IRQHandler,          			/* CAN2 RX0 interrupts                                                */
+	(uint32_t)CAN2_RX1_IRQHandler,          			/* CAN2 RX1 interrupts                                                */
+	(uint32_t)CAN2_SCE_IRQHandler,          			/* CAN2 SCE interrupt                                                 */
+	(uint32_t)OTG_FS_IRQHandler,            			/* USB On The Go FS global interrupt                                  */
+	(uint32_t)DMA2_Stream5_IRQHandler,      			/* DMA2 Stream5 global interrupt                                      */
+	(uint32_t)DMA2_Stream6_IRQHandler,      			/* DMA2 Stream6 global interrupt                                      */
+	(uint32_t)DMA2_Stream7_IRQHandler,      				/* DMA2 Stream7 global interrupt                                      */
+	(uint32_t)USART6_IRQHandler,            			/* USART6 global interrupt                                            */
+	(uint32_t)I2C3_EV_IRQHandler,           			/* I2C3 event interrupt                                               */
+	(uint32_t)I2C3_ER_IRQHandler,           			/* I2C3 error interrupt                                               */
+	(uint32_t)OTG_HS_EP1_OUT_IRQHandler,    			/* USB On The Go HS End Point 1 Out                                   */
+	(uint32_t)OTG_HS_EP1_IN_IRQHandler,     			/* USB On The Go HS End Point 1 In                                    */
+	(uint32_t)OTG_HS_WKUP_IRQHandler,       			/* USB On The Go HS Wakeup                                            */
+	(uint32_t)OTG_HS_IRQHandler,            			/* USB On The Go HS global interrupt                                  */
+	(uint32_t)DCMI_IRQHandler,              			/* DCMI global interrupt                                              */
+	0,                            						/* Reserved                                                           */
+	0,                            						/* Reserved                                                           */
+	(uint32_t)FPU_IRQHandler,               			/* Floating point unit interrupt                                      */
+	0,                            						/* Reserved                                                           */
+	0,                            						/* Reserved                                                           */
+	(uint32_t)SPI4_IRQHandler,              			/* SPI 4 global interrupt                                             */
+	0,                            						/* Reserved                                                           */
+	0,                            						/* Reserved                                                           */
+	(uint32_t)SAI1_IRQHandler,              			/* SAI1 global interrupt                                              */
+	0,                            						/* Reserved                                                           */
+	0,                            						/* Reserved                                                           */
+	0,                            						/* Reserved                                                           */
+	(uint32_t)SAI2_IRQHandler,              			/* SAI2 global interrupt                                              */
+	(uint32_t)QuadSPI_IRQHandler,           			/* QuadSPI global interrupt                                           */
+	(uint32_t)HDMI_CEC_IRQHandler,          			/* HDMI-CEC global interrupt                                          */
+	(uint32_t)SPDIF_Rx_IRQHandler,          			/* SPDIF-Rx global interrupt                                          */
+	(uint32_t)FMPI2C1_IRQHandler,           			/* FMPI2C1 event interrupt                                            */
+	(uint32_t)FMPI2C1_error_IRQHandler     				/* FMPI2C1 error interrupt                                            */
+	
+};
+
+//Default_Handler is an alias function name for "NMI_Handler".
+//In the vector table array, address of "Default_Handler" function will be stored.
+//So when NMI exception triggers, "Default_Handler" will be executed.
+void Default_Handler(void)
+{
+	while(1);
+}
+
+void Reset_Handler(void)
+{
+	//copy .data to SRAM
+	uint32_t size = (uint32_t)&_edata - (uint32_t)&_sdata;
+	
+	uint8_t *pDst = (uint8_t*)&_sdata; //sram
+	uint8_t *pSrc = (uint8_t*)&_la_data; //flash
+	
+	for(uint32_t i =0 ; i < size ; i++)
+	{
+		*pDst++ = *pSrc++;
+	}
+	
+	//Init. the .bss section to zero in SRAM
+	size = &_ebss - &_sbss;
+	pDst = (uint8_t*)&_sbss;
+	for(uint32_t i =0 ; i < size ; i++)
+	{
+		*pDst++  = 0;
+	}
+	
+	//call init function of std. library if desired
+	__libc_init_array();
+	
+	//call main()
+	main();
+}
+
+
+/////////////////////////// syscalls.c ///////////////////////////
+
+/* Includes */
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <stdio.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/times.h>
+
+/* Variables */
+//#undef errno
+extern int errno;
+extern int __io_putchar(int ch) __attribute__((weak));
+extern int __io_getchar(void) __attribute__((weak));
+
+register char * stack_ptr asm("sp");
+
+char *__env[1] = { 0 };
+char **environ = __env;
+
+
+
+/* Functions */
+void initialise_monitor_handles()
+{
+}
+
+int _getpid(void)
+{
+	return 1;
+}
+
+int _kill(int pid, int sig)
+{
+	errno = EINVAL;
+	return -1;
+}
+
+void _exit (int status)
+{
+	_kill(status, -1);
+	while (1) {}		/* Make sure we hang here */
+}
+
+__attribute__((weak)) int _read(int file, char *ptr, int len)
+{
+	int DataIdx;
+
+	for (DataIdx = 0; DataIdx < len; DataIdx++)
+	{
+		*ptr++ = __io_getchar();
+	}
+
+return len;
+}
+
+__attribute__((weak)) int _write(int file, char *ptr, int len)
+{
+	int DataIdx;
+
+	for (DataIdx = 0; DataIdx < len; DataIdx++)
+	{
+		__io_putchar(*ptr++);
+		//ITM_SendChar(*ptr++);
+	}
+	return len;
+}
+
+int _close(int file)
+{
+	return -1;
+}
+
+
+int _fstat(int file, struct stat *st)
+{
+	st->st_mode = S_IFCHR;
+	return 0;
+}
+
+int _isatty(int file)
+{
+	return 1;
+}
+
+int _lseek(int file, int ptr, int dir)
+{
+	return 0;
+}
+
+int _open(char *path, int flags, ...)
+{
+	/* Pretend like we always fail */
+	return -1;
+}
+
+int _wait(int *status)
+{
+	errno = ECHILD;
+	return -1;
+}
+
+int _unlink(char *name)
+{
+	errno = ENOENT;
+	return -1;
+}
+
+int _times(struct tms *buf)
+{
+	return -1;
+}
+
+int _stat(char *file, struct stat *st)
+{
+	st->st_mode = S_IFCHR;
+	return 0;
+}
+
+int _link(char *old, char *new)
+{
+	errno = EMLINK;
+	return -1;
+}
+
+int _fork(void)
+{
+	errno = EAGAIN;
+	return -1;
+}
+
+int _execve(char *name, char **argv, char **env)
+{
+	errno = ENOMEM;
+	return -1;
+}
+
+
+
+/**
+ _sbrk
+ Increase program data space. Malloc and related functions depend on this
+**/
+caddr_t _sbrk(int incr)
+{
+	extern char end asm("end");
+	static char *heap_end;
+	char *prev_heap_end;
+
+	if (heap_end == 0)
+		heap_end = &end;
+
+	prev_heap_end = heap_end;
+	if (heap_end + incr > stack_ptr)
+	{
+		errno = ENOMEM;
+		return (caddr_t) -1;
+	}
+
+	heap_end += incr;
+
+	return (caddr_t) prev_heap_end;
+}
+
+
+/////////////////////////// All files in directory ///////////////////////////
+final.map
+final_sh.elf
+led.c
+led.h
+led.o
+linker notes.txt
+main.c
+main.h
+main.o
+main_log
+Makefile
+openocd.txt
+stm32_ls.ld
+stm32_startup.c
+stm32_startup.o
+syscalls.c
+syscalls.o
